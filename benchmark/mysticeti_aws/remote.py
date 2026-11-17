@@ -6,6 +6,7 @@ import hashlib
 import io
 import json
 from pathlib import Path
+import re
 import shlex
 import subprocess
 import time
@@ -75,14 +76,24 @@ class Runner:
         source = self.source.resolve()
         if source in checkout.parents or checkout in source.parents:
             raise ValueError('remote.source_dir must equal the controller checkout or be a separate directory')
-        provenance = resolve_source(checkout, self.settings['repo'])
-        if source == checkout and for_install:
-            head = subprocess.check_output(['git', '-C', str(checkout), 'rev-parse', 'HEAD'],
-                                           text=True).strip()
-            if provenance['commit'] != head:
-                raise ValueError('When building in the controller checkout, repo.ref must resolve to HEAD; '
-                                 'set repo.ref to HEAD to build the current checkout')
-        return provenance
+        repository = dict(self.settings['repo'])
+        if source == checkout:
+            # The normal workflow needs no ref edits between installing and running:
+            # install builds this checkout; remote uses the last recorded build.
+            if for_install:
+                repository['ref'] = 'HEAD'
+            else:
+                try:
+                    record = json.loads((self.source / '.mysticeti-build.json').read_text(encoding='utf-8'))
+                    commit = record['commit']
+                    if not isinstance(commit, str) or not re.fullmatch(r'[0-9a-f]{40}', commit):
+                        raise ValueError('invalid installed commit')
+                    if record.get('repository') != repository['url']:
+                        raise ValueError('installed repository does not match repo.url')
+                except (OSError, ValueError, KeyError, TypeError) as error:
+                    raise RuntimeError(f'Invalid build at {self.source}: {error}. Run fab install first.') from error
+                repository['ref'] = commit
+        return resolve_source(checkout, repository)
 
     def _ssh(self, host):
         if self._key is None:
@@ -131,7 +142,7 @@ class Runner:
         scripts = PACKAGE_DIR / 'scripts'
         arguments = [str(self.source), self.provenance['commit'],
                      str(self.settings['remote']['build_jobs']), self.provenance['repository']]
-        print('Installing and compiling on the controller (output is visible)...', flush=True)
+        print(f'Installing and compiling commit {self.provenance["commit"]} on the controller (output is visible)...', flush=True)
         subprocess.run(['bash', str(scripts / 'install_node.sh'), *arguments], check=True)
         verify_build(self.source, self.provenance)
         self._parallel(self._wait_ssh, hosts)
@@ -168,6 +179,7 @@ class Runner:
             verify_build(self.source)
         self.provenance = self._resolve_source()
         self.controller_build = verify_build(self.source, self.provenance)
+        print(f'Using installed Mysticeti commit {self.provenance["commit"]}.', flush=True)
         hosts = self.cloud.hosts()
         if len(hosts) < parameters['nodes']:
             raise RuntimeError(f'Need {parameters["nodes"]} running Mysticeti instances; found {len(hosts)}')

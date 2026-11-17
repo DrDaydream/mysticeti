@@ -82,7 +82,7 @@ def create(ctx, nodes=2, settings='settings.json'):
 @task
 @guarded
 def install(ctx, settings='settings.json'):
-    """Resolve clean controller source and visibly compile that exact commit on controller and nodes."""
+    """Build current HEAD in the controller checkout; a separate source directory uses repo.ref."""
     Runner(load_settings(settings)).install()
 
 

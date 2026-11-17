@@ -23,7 +23,7 @@ fab info
 
 ## 固定源码与安装
 
-`repo.url` 指向上述用户仓库，`repo.ref` 默认 `HEAD`。每次安装或运行都从执行适配器的控制机 checkout 解析完整 40 位提交，要求 checkout 干净且 origin 与 `repo.url` 一致。也可以指定控制机已有的分支、标签或完整提交；该提交必须含有 `adversary.rs`，且能够从远端仓库取得。旧 `repo.commit` 设置已移除，迁移时改用 `repo.ref`。
+`repo.url` 指向上述用户仓库。默认在原控制机仓库中构建时，`fab install` 自动选择当前 `HEAD`，`fab remote` 自动选择 `.mysticeti-build.json` 中的已安装提交；无需来回修改 `repo.ref`，此前留下的旧提交或分支引用不会影响这两个操作。只有使用独立 `remote.source_dir` 时，才按 `repo.ref` 选择控制机已有的分支、标签或完整提交。源码身份仍解析为完整 40 位提交，要求 checkout 干净、origin 与 `repo.url` 一致且提交含有 `adversary.rs`。旧 `repo.commit` 设置已移除。
 
 源码改变后先提交并使该提交可从远端获取，再明确安装：
 
@@ -33,7 +33,7 @@ git rev-parse HEAD
 fab install
 ```
 
-只有 `fab install` 安装依赖并编译。控制机和工作节点使用同一解析后提交、Rust `1.72.1`、`--locked --release` 与 `-C target-cpu=native`。`remote.source_dir` 默认 `/home/ubuntu/experiments/mysticeti`，支持直接使用控制机当前仓库。此时 `repo.ref` 使用 `HEAD`（或解析到同一提交的引用），安装保留当前分支和本地 settings，不另建控制机源码目录。独立源码目录仍然兼容；已有不同 origin 或未保存文件时会拒绝覆盖。
+只有 `fab install` 安装依赖并编译。控制机和工作节点使用同一解析后提交、Rust `1.72.1`、`--locked --release` 与 `-C target-cpu=native`。`remote.source_dir` 默认 `/home/ubuntu/experiments/mysticeti`，直接使用控制机当前仓库。安装自动构建当前 HEAD，保留当前分支和本地 settings，不另建控制机源码目录。要构建其他源码版本，先将控制机 checkout 切换到该版本；独立源码目录仍可通过 `repo.ref` 选择版本。已有不同 origin 或未保存文件时会拒绝覆盖。
 
 在原来的 `/home/ubuntu/experiments/mysticeti/benchmark` 目录按顺序执行：
 
@@ -48,7 +48,7 @@ fab remote --adversary A3 --byzantine 3
 
 编译后运行 genesis 命令检查二进制是否导出完整 adversary schema，再写入 `.mysticeti-build.json`：仓库、完整提交、工具链、编译参数、二进制 SHA-256 与 `adversary_schema=1`。`results/installation.json` 汇总各机器记录。缺失 schema 的旧 manifest、错误提交或校验和均被拒绝。
 
-`fab remote` 在本地解析源码身份，在各节点执行纯 Python manifest/校验和校验。该命令不编译、不安装依赖、不更新工作节点 Git。更新 Python 报告代码后，可以把 `repo.ref` 固定为现有 `.mysticeti-build.json` 中的 `commit`，继续运行该已安装版本，无需重新编译。报告中的源码提交始终表示实际验证的二进制构建提交。若要安装当前仓库的新源码，在同目录安装前把 `repo.ref` 改回 `HEAD`，再执行 `fab install`；不能用原上游二进制运行攻击。
+`fab remote` 在各节点执行纯 Python manifest/校验和校验，不编译、不安装依赖、不更新工作节点 Git。同目录更新 Python 报告代码后，直接执行 `remote` 即可复用已安装版本；要构建当前源码则直接执行 `install`，之后继续 `remote`。终端会打印实际使用的提交，报告中的源码提交表示经过验证的二进制构建提交，可能与更新后的适配器 HEAD 不同。构建记录缺失、损坏、二进制校验和错误或节点版本不一致仍会报错，不能用原上游二进制运行攻击。
 
 ## 选择 A0–A5
 
@@ -98,7 +98,7 @@ A1 有限时间扣留 Byzantine 提议；A2 与 DAG 无关地分发两个版本�
 
 此实现使用已有 `round_robin` leader schedule 和三轮 wave；默认两个 leaders。schedule 写入 run metadata，不增加 Rust 协议字段。适配器开启 pipeline，并记录设置。活动模式必须设置 `enable_synchronizer=true`；启动脚本通过 `unset USE_SYNCER` 启用缺失区块抓取。这份原型的 Rust 代码检测变量是否存在，并在存在时跳过抓取，因此 `USE_SYNCER=0` 也会禁用抓取。A0 显式禁用同步器时才设置 `USE_SYNCER=1`。
 
-此前适配器将该开关映射反了：历史结果中的 `enable_synchronizer=true` 不能证明补块实际启用。修复只改变 Python 生成的节点启动环境；可以按前文固定已安装二进制的提交并直接执行 `fab remote`，无需重新编译。修复后需重新运行实验，旧采样不会因此变化；是否恢复 A2–A5 的提交，需要实际运行验证。
+此前适配器将该开关映射反了：历史结果中的 `enable_synchronizer=true` 不能证明补块实际启用。修复只改变 Python 生成的节点启动环境；在原控制目录直接执行 `fab remote` 即可复用现有二进制，无需重新编译。修复后需重新运行实验，旧采样不会因此变化；是否恢复 A2–A5 的提交，需要实际运行验证。
 
 攻击时间相对各节点 Core 初始化的本地单调时钟。Fabric 并行启动存在偏差，`run.json` 记录控制机观察的 `launch_spread_seconds`。测量 warmup 在所有运行节点就绪后开始，因此与节点攻击时间轴存在启动和就绪偏差；分析时对齐各节点日志，不能把相同毫秒设置当作全局同时启动。
 
