@@ -218,10 +218,13 @@ class Runner:
                              '--committee-path', f'{remote_directory}/committee.yaml',
                              '--parameters-path', f'{remote_directory}/parameters.yaml',
                              '--private-config-path', f'{remote_directory}/private/{index}.yaml']
+                # This prototype's BlockFetcherWorker returns early when USE_SYNCER
+                # exists (even "0"). Remove it to enable missing-block fetching.
+                syncer_env = 'unset USE_SYNCER' if parameters['enable_synchronizer'] else 'export USE_SYNCER=1'
                 script = '\n'.join([
                     '#!/usr/bin/env bash', 'set -euo pipefail',
                     f'export TPS={allocation["per_node_tps"]}', f'export TRANSACTION_SIZE={parameters["tx_size"]}',
-                    'export CONSENSUS_ONLY=1', ('export USE_SYNCER=1' if parameters['enable_synchronizer'] else 'unset USE_SYNCER'), 'export INITIAL_DELAY=0', 'export RUST_LOG=info',
+                    'export CONSENSUS_ONLY=1', syncer_env, 'export INITIAL_DELAY=0', 'export RUST_LOG=info',
                     f'exec {shlex.join(node_args)} > {shlex.quote(remote_directory + "/node.log")} 2>&1', '',
                 ])
                 connection.put(io.BytesIO(script.encode()), remote=f'{remote_directory}/start.sh')

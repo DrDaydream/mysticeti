@@ -1,7 +1,9 @@
 import copy
 import json
+import os
 from contextlib import nullcontext
 from pathlib import Path
+import subprocess
 from types import SimpleNamespace
 
 import pytest
@@ -54,9 +56,58 @@ def test_all_replicas_receive_same_attack_configuration_and_synchronizer(monkeyp
     assert actual['adversary'] == parameters['adversary']
     assert actual['wave_length'] in (3, 4, 5)
     if 'mysticeti_aws' == 'mysticeti_aws':
-        assert all('export USE_SYNCER=1' in uploads[(h.ip, '/runs/test/start.sh')] for h in hosts)
+        assert all('unset USE_SYNCER' in uploads[(h.ip, '/runs/test/start.sh')] for h in hosts)
     else:
         assert actual['enable_synchronizer'] is True
+
+
+@pytest.mark.parametrize('mode,enabled', [(f'A{i}', True) for i in range(6)] + [('A0', False)])
+@pytest.mark.parametrize('inherited', [None, '0', '1'])
+def test_node_launch_sets_effective_legacy_fetcher_environment(monkeypatch, tmp_path, mode, enabled, inherited):
+    """Execute the uploaded script: parent/tmux variables must not invert the setting.
+
+    The prototype's BlockFetcherWorker returns early when USE_SYNCER exists,
+    irrespective of its value. Enabling fetch must remove it at the node process.
+    """
+    from mysticeti_aws import remote
+    bash = Path('C:/Program Files/Git/bin/bash.exe') if os.name == 'nt' else Path('/bin/bash')
+    if not bash.exists():
+        pytest.skip('bash unavailable')
+    run = subprocess.run
+    monkeypatch.setattr(remote.subprocess, 'run', genesis_fixture)
+    runner = remote.Runner(copy.deepcopy(DEFAULTS), cloud=SimpleNamespace())
+    node = tmp_path / 'node'
+    node.mkdir()
+    runner.binary = tmp_path / 'fake-mysticeti'
+    runner.binary.write_text('#!/usr/bin/env bash\nprintf "%s\\n" "${USE_SYNCER-unset}"\n', newline='\n')
+    runner.binary.chmod(0o755)
+    uploaded = []
+
+    class SSH:
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def run(self, *args, **kwargs): pass
+        def put(self, source, remote):
+            if remote.endswith('/start.sh'):
+                uploaded.append(source.getvalue().decode())
+
+    monkeypatch.setattr(runner, '_ssh', lambda host: SSH())
+    monkeypatch.setattr(runner, '_parallel', lambda fn, values: [fn(v) for v in values])
+    parameters = validate_benchmark(dict(copy.deepcopy(DEFAULTS['benchmark']), nodes=4,
+                                        enable_synchronizer=enabled, adversary={'mode': mode}))
+    runner._configure_and_start([SimpleNamespace(ip='127.0.0.1') for _ in range(4)],
+                                parameters, tmp_path / 'config', node.as_posix())
+    assert len(uploaded) == 4
+    env = dict(os.environ)
+    env.pop('USE_SYNCER', None)
+    if inherited is not None:
+        env['USE_SYNCER'] = inherited
+    for index, script in enumerate(uploaded):
+        start = tmp_path / f'start-{index}.sh'
+        start.write_text(script, newline='\n')
+        result = run([str(bash), start.as_posix()], env=env, text=True, capture_output=True)
+        assert result.returncode == 0, result.stderr
+        assert (node / 'node.log').read_text().strip() == ('unset' if enabled else '1')
 
 
 def test_fabric_remote_parser_accepts_attack_selector_and_count(monkeypatch, tmp_path):

@@ -43,7 +43,7 @@ The Rust default is A0. Fabric resolves a missing attack start to the configured
 
 The queue enforces message and serialized-block byte limits across a node's connections. Overflow releases traffic early and records the event, reducing attack strength instead of creating unbounded memory use or artificial permanent isolation. Timed releases do not require another proposal to arrive. Connection loss can abandon queued deliveries; normal reconnection/fetch applies. A0–A4 do not control honest forwarding, so honest dissemination can reveal an alternate version early. A5 controls outgoing honest block paths too. Finite scheduler delay is separate from ordinary network backpressure.
 
-Mysticeti uses its existing deterministic round-robin leader schedule and three-round waves. Attack runs enable the existing `USE_SYNCER` path so fetching remains available. Changing these experiments to paper variants or a different leader protocol would be a separate change.
+Mysticeti uses its existing deterministic round-robin leader schedule and three-round waves. Attack runs require `enable_synchronizer=true`. The launcher removes `USE_SYNCER` from the node environment because this prototype's `BlockFetcherWorker` skips missing-block fetching whenever that variable exists, even if its value is `0`. Setting `USE_SYNCER=1` is reserved for explicitly disabling fetching in A0. Earlier adapter revisions reversed this mapping, so their recorded `enable_synchronizer=true` does not establish that fetching ran. The launcher correction works with existing binaries; experiments must be rerun to assess progress. Changing these experiments to paper variants or a different leader protocol would be a separate change.
 
 ## Interpreting results
 

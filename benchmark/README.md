@@ -96,7 +96,9 @@ A1 有限时间扣留 Byzantine 提议；A2 与 DAG 无关地分发两个版本�
 
 `target_authority` 必须在固定 Byzantine 集合里。`target_round` 如提供必须为正，并确实选出该身份（或未指定身份时的某个固定 Byzantine 身份）。开启 pipeline 后第 r 轮的 leaders 为 `(r + offset) % n`，其中 `offset=0..leaders-1`。只给身份时由策略选择符合条件的轮次；两者均为空时使用策略找到的最早合适目标。
 
-此实现使用已有 `round_robin` leader schedule 和三轮 wave；默认两个 leaders。schedule 写入 run metadata，不增加 Rust 协议字段。适配器开启 pipeline，并记录设置。活动模式必须启用现有同步器，启动脚本设置 `USE_SYNCER=1`。
+此实现使用已有 `round_robin` leader schedule 和三轮 wave；默认两个 leaders。schedule 写入 run metadata，不增加 Rust 协议字段。适配器开启 pipeline，并记录设置。活动模式必须设置 `enable_synchronizer=true`；启动脚本通过 `unset USE_SYNCER` 启用缺失区块抓取。这份原型的 Rust 代码检测变量是否存在，并在存在时跳过抓取，因此 `USE_SYNCER=0` 也会禁用抓取。A0 显式禁用同步器时才设置 `USE_SYNCER=1`。
+
+此前适配器将该开关映射反了：历史结果中的 `enable_synchronizer=true` 不能证明补块实际启用。修复只改变 Python 生成的节点启动环境；可以按前文固定已安装二进制的提交并直接执行 `fab remote`，无需重新编译。修复后需重新运行实验，旧采样不会因此变化；是否恢复 A2–A5 的提交，需要实际运行验证。
 
 攻击时间相对各节点 Core 初始化的本地单调时钟。Fabric 并行启动存在偏差，`run.json` 记录控制机观察的 `launch_spread_seconds`。测量 warmup 在所有运行节点就绪后开始，因此与节点攻击时间轴存在启动和就绪偏差；分析时对齐各节点日志，不能把相同毫秒设置当作全局同时启动。
 
