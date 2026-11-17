@@ -211,11 +211,30 @@ def test_summary_rejects_resets_in_any_counter(end):
         )
 
 
-def test_summary_rejects_one_stalled_replica_even_when_another_progresses():
+def test_summary_excludes_stalled_replica_from_latency_only():
     before = {"a": {"count": 100, "sum": 10}, "stalled": {"count": 100, "sum": 10}}
     after = {"a": {"count": 300, "sum": 50}, "stalled": {"count": 100, "sum": 10}}
-    with pytest.raises(ValueError, match="stalled"):
-        metrics.summarize(before, after, {"a": 2, "stalled": 2})
+    result = metrics.summarize(before, after, {"a": 2, "stalled": 2})
+    assert result['replica_tps_mean'] == 50
+    assert result['mean_latency_ms'] == 200
+    assert result['latency_contributors'] == 1
+    assert result['zero_commit_authorities'] == ['stalled']
+    assert result['nodes'][1]['mean_latency_ms'] is None
+    assert result['all_nodes_progress'] is False
+
+
+def test_all_stalled_replicas_have_zero_tps_and_unavailable_latency():
+    snapshots = {'0': {'count': 100, 'sum': 10}}
+    result = metrics.summarize(snapshots, snapshots, {'0': 2})
+    assert result['replica_tps_mean'] == 0
+    assert result['mean_latency_ms'] is None
+    assert result['latency_contributors'] == 0
+
+
+def test_zero_count_with_changed_latency_sum_is_invalid():
+    with pytest.raises(ValueError, match='sum'):
+        metrics.summarize({'0': {'count': 0, 'sum': 0}},
+                          {'0': {'count': 0, 'sum': 1}}, {'0': 2})
 
 
 @pytest.mark.parametrize("key", ["count", "sum"])

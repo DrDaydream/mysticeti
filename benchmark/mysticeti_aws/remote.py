@@ -19,6 +19,7 @@ import yaml
 from .build import verification_script, verify_build
 from .cloud import Cloud
 from .metrics import parse_snapshot, summarize
+from .report import format_summary
 from .settings import ADVERSARY_DEFAULTS, load_allocation, validate_benchmark
 from .source import resolve_source
 
@@ -69,13 +70,13 @@ class Runner:
             self._cloud = Cloud(self.settings)
         return self._cloud
 
-    def _resolve_source(self):
+    def _resolve_source(self, *, for_install=False):
         checkout = PACKAGE_DIR.parent.resolve()
         source = self.source.resolve()
         if source in checkout.parents or checkout in source.parents:
             raise ValueError('remote.source_dir must equal the controller checkout or be a separate directory')
         provenance = resolve_source(checkout, self.settings['repo'])
-        if source == checkout:
+        if source == checkout and for_install:
             head = subprocess.check_output(['git', '-C', str(checkout), 'rev-parse', 'HEAD'],
                                            text=True).strip()
             if provenance['commit'] != head:
@@ -123,7 +124,7 @@ class Runner:
                 time.sleep(3)
 
     def install(self):
-        self.provenance = self._resolve_source()
+        self.provenance = self._resolve_source(for_install=True)
         hosts = self.cloud.hosts()
         if not hosts:
             raise RuntimeError('No Mysticeti instances found. Run fab info; create or start the testbed.')
@@ -299,6 +300,7 @@ class Runner:
         save_json(directory / 'run.json', record)
         print(f'Results: {directory}\nTarget load: {allocation}; crashed tail members are not started.', flush=True)
         problem = None
+        summary = None
         try:
             previous_errors = self._stop(hosts)
             if previous_errors:
@@ -337,11 +339,17 @@ class Runner:
                 writer.writeheader()
                 writer.writerows(summary['nodes'])
             record['status'] = 'complete'
+            # Print before SSH cleanup/log downloads, which can take a long time.
+            preview = dict(record, status='measurement complete; cleanup/log download pending')
+            text = format_summary(preview, summary, directory)
+            print(text, flush=True)
+            (directory / 'summary.txt').write_text(text, encoding='utf-8')
         except BaseException as error:
             record['status'] = 'failed'
             record['error'] = str(error) or type(error).__name__
             problem = error
         finally:
+            print('Stopping experiment nodes and downloading logs...', flush=True)
             stop_errors = self._stop(hosts)
             log_errors = self._download_logs(active, directory, remote_directory)
             record['cleanup_errors'] = stop_errors
@@ -351,7 +359,11 @@ class Runner:
                 if problem is None:
                     problem = RuntimeError('Cleanup/log collection failed; see run.json')
             save_json(directory / 'run.json', record)
+            text = format_summary(record, summary, directory)
+            (directory / 'summary.txt').write_text(text, encoding='utf-8')
+            if summary is None or problem is not None:
+                print(text, flush=True)
+            else:
+                print(f'Final status: {record["status"]}. Summary saved: {directory / "summary.txt"}', flush=True)
         if problem is not None:
             raise problem
-        print(f'Complete. Replica mean TPS: {summary["replica_tps_mean"]:.2f}; '
-              f'mean shared commit latency: {summary["mean_latency_ms"]:.2f} ms\n{directory}', flush=True)

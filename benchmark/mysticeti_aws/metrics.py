@@ -119,9 +119,9 @@ def summarize(
     ``replica_tps_mean`` is the arithmetic mean of replica TPS, never their
     sum. ``mean_latency_ms`` is the arithmetic mean of per-replica latency
     means, not a count-weighted mean. All counters are finite and nonnegative;
-    any reset, missing counter, or replica with no new transactions raises
-    ValueError. Consequently ``all_nodes_progress`` is true for every returned
-    summary. Optional ``committed_leaders`` defaults to zero and is checked for
+    resets and missing counters raise ValueError. Zero-progress replicas count
+    as zero TPS and are excluded from latency; all-zero latency is None.
+    Optional ``committed_leaders`` defaults to zero and is checked for
     resets; it does not substitute for committed transaction progress.
     """
     if not before or set(before) != set(after) or set(before) != set(elapsed):
@@ -142,20 +142,23 @@ def summarize(
                 raise ValueError(f"Node {authority} counter reset: {key}")
             deltas[key] = last - first
         count = deltas["count"]
-        if count == 0:
-            raise ValueError(f"Node {authority} made zero committed transaction progress")
+        if count == 0 and deltas['sum'] != 0:
+            raise ValueError(f"Node {authority} latency sum changed with zero committed transactions")
         nodes.append(
             {
                 "authority": authority,
                 "committed_transactions": count,
                 "tps": count / duration,
-                "mean_latency_ms": deltas["sum"] / count * 1000,
+                "mean_latency_ms": deltas["sum"] / count * 1000 if count else None,
                 "duration_s": duration,
             }
         )
+    latencies = [node['mean_latency_ms'] for node in nodes if node['committed_transactions'] > 0]
     return {
         "nodes": nodes,
         "replica_tps_mean": fmean(node["tps"] for node in nodes),
-        "mean_latency_ms": fmean(node["mean_latency_ms"] for node in nodes),
-        "all_nodes_progress": True,
+        "mean_latency_ms": fmean(latencies) if latencies else None,
+        "latency_contributors": len(latencies),
+        "zero_commit_authorities": [node['authority'] for node in nodes if node['committed_transactions'] == 0],
+        "all_nodes_progress": len(latencies) == len(nodes),
     }

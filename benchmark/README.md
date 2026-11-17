@@ -48,7 +48,7 @@ fab remote --adversary A3 --byzantine 3
 
 编译后运行 genesis 命令检查二进制是否导出完整 adversary schema，再写入 `.mysticeti-build.json`：仓库、完整提交、工具链、编译参数、二进制 SHA-256 与 `adversary_schema=1`。`results/installation.json` 汇总各机器记录。缺失 schema 的旧 manifest、错误提交或校验和均被拒绝。
 
-`fab remote` 在本地解析源码身份，在各节点执行纯 Python manifest/校验和校验。该命令不编译、不安装依赖、不更新工作节点 Git。切换提交后必须先重新安装，不能用原上游二进制运行攻击。
+`fab remote` 在本地解析源码身份，在各节点执行纯 Python manifest/校验和校验。该命令不编译、不安装依赖、不更新工作节点 Git。更新 Python 报告代码后，可以把 `repo.ref` 固定为现有 `.mysticeti-build.json` 中的 `commit`，继续运行该已安装版本，无需重新编译。报告中的源码提交始终表示实际验证的二进制构建提交。若要安装当前仓库的新源码，在同目录安装前把 `repo.ref` 改回 `HEAD`，再执行 `fab install`；不能用原上游二进制运行攻击。
 
 ## 选择 A0–A5
 
@@ -101,6 +101,16 @@ A1 有限时间扣留 Byzantine 提议；A2 与 DAG 无关地分发两个版本�
 攻击时间相对各节点 Core 初始化的本地单调时钟。Fabric 并行启动存在偏差，`run.json` 记录控制机观察的 `launch_spread_seconds`。测量 warmup 在所有运行节点就绪后开始，因此与节点攻击时间轴存在启动和就绪偏差；分析时对齐各节点日志，不能把相同毫秒设置当作全局同时启动。
 
 ## 结果与离线检查
+
+测量结束立即在终端打印 Bullshark 风格的 `SUMMARY`，随后停止节点并下载日志；最终状态写入 `summary.txt` 和 `run.json`。零提交节点的 TPS 为 0、延迟为 `N/A`（JSON 中为 null），平均延迟仅使用有提交的副本均值；全部零提交时平均延迟为 `N/A`。零提交仍计入平均 TPS，缺失指标或计数器重置仍报告错误。输出分别标明所有运行副本和诚实副本的统计，列出每个副本的提交数、TPS、延迟和采样时长。`complete` 仅表示实验流程完成，不代表所有节点都有进展。
+
+在 `benchmark` 目录补打印最新一次结果：
+
+```bash
+/usr/bin/python3 -m mysticeti_aws.report --latest
+```
+
+也可以指定 `results/run-...` 目录。报告器优先读取 `samples.jsonl` 的完整 before/after 窗口重新计算，能恢复旧版本因零提交而未生成的汇总。输出保存在该轮 `summary.txt`，不改写历史 `run.json` 状态；没有完整窗口时显示 `N/A` 和诊断，不把部分采样冒充完整实验。
 
 `results/run-*` 保留 `run.json`、`summary.json`、`summary.csv`、生成的配置、原始 Prometheus 快照及节点日志。run manifest 包含全部有效攻击参数、固定 Byzantine/崩溃身份、wave/leader 设置、同步器状态、源码来源及各二进制记录；summary 同时保存攻击参数。CSV 继续记录逐副本吞吐与延迟。攻击效果、额外版本、commit/skip/undecided 和恢复需要结合节点事件分析。
 

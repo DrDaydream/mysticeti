@@ -36,7 +36,7 @@ def test_generated_private_paths_and_timeout_match_remote_runtime(monkeypatch,tm
     assert params['leader_timeout']=={'secs':1,'nanos':0}
 
 
-def test_collection_failure_stops_nodes_and_keeps_failure_record(monkeypatch,tmp_path):
+def test_collection_failure_stops_nodes_and_keeps_failure_record(monkeypatch,tmp_path,capsys):
     from mysticeti_aws.remote import Runner
     from mysticeti_aws.settings import DEFAULTS
     settings=copy.deepcopy(DEFAULTS)
@@ -55,9 +55,13 @@ def test_collection_failure_stops_nodes_and_keeps_failure_record(monkeypatch,tmp
     records=list(tmp_path.glob('*/run.json'))
     assert len(records)==1
     assert json.loads(records[0].read_text())['status']=='failed'
+    output = capsys.readouterr().out
+    assert 'SUMMARY' in output and 'node died' in output
+    assert (records[0].parent / 'summary.txt').is_file()
 
 
-def test_end_to_end_runner_uses_prebuilt_binary_and_reports_replica_mean(monkeypatch,tmp_path):
+@pytest.mark.parametrize('stalled', [(), (0,), (0, 1, 2, 3)])
+def test_end_to_end_runner_uses_prebuilt_binary_and_reports_replica_mean(monkeypatch,tmp_path,capsys,stalled):
     import hashlib
     import threading
     import yaml
@@ -86,7 +90,7 @@ def test_end_to_end_runner_uses_prebuilt_binary_and_reports_replica_mean(monkeyp
             with commands_lock:
                 commands.append(command)
                 if '/metrics' in command:
-                    index=counters.get(self.host.ip,0)+1
+                    index=0 if int(self.host.ip.rsplit('.', 1)[1]) in stalled else counters.get(self.host.ip,0)+1
                     counters[self.host.ip]=index
                     return SimpleNamespace(stdout=f'latency_s_count{{workload="shared"}} {index*100}\nlatency_s_sum{{workload="shared"}} {index*20}\n')
             return SimpleNamespace(stdout=json.dumps(build))
@@ -102,9 +106,22 @@ def test_end_to_end_runner_uses_prebuilt_binary_and_reports_replica_mean(monkeyp
     runner=Runner(settings,cloud=cloud,results_dir=tmp_path/'results')
     monkeypatch.setattr(runner,'_ssh',SSH)
     monkeypatch.setattr(runner,'_resolve_source',lambda:provenance)
+    download = runner._download_logs
+    def download_after_print(*args):
+        output = capsys.readouterr().out
+        assert 'SUMMARY' in output and '+ RESULTS' in output
+        assert 'cleanup/log download pending' in output
+        return download(*args)
+    monkeypatch.setattr(runner, '_download_logs', download_after_print)
     runner.remote(dict(settings['benchmark'],nodes=4,duration=1,warmup=0,scrape_interval=1))
     summary=json.loads(next((tmp_path/'results').glob('*/summary.json')).read_text())
-    assert summary['mean_latency_ms']==pytest.approx(200)
+    if len(stalled) == 4:
+        assert summary['mean_latency_ms'] is None
+    else:
+        assert summary['mean_latency_ms']==pytest.approx(200)
+    assert summary['latency_contributors'] == 4 - len(stalled)
+    assert summary['all_nodes_progress'] == (not stalled)
+    assert next((tmp_path/'results').glob('*/summary.txt')).is_file()
     assert len(summary['nodes'])==4
     assert summary['replica_tps_mean']==pytest.approx(sum(n['tps'] for n in summary['nodes'])/4)
     assert len(list((tmp_path/'results').glob('*/logs/node-*.log')))==4

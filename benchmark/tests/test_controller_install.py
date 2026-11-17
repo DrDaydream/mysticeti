@@ -32,7 +32,9 @@ def test_shared_checkout_rejects_a_different_ref_without_changing_head(monkeypat
     settings['repo']['ref'] = previous
     monkeypatch.setattr(remote, 'PACKAGE_DIR', checkout / 'benchmark')
     with pytest.raises(ValueError, match='repo.ref.*HEAD'):
-        remote.Runner(settings)._resolve_source()
+        remote.Runner(settings)._resolve_source(for_install=True)
+    # A reporting-only adapter update can still run the explicitly pinned old build.
+    assert remote.Runner(settings)._resolve_source()['commit'] == previous
     assert git(checkout, 'rev-parse', 'HEAD') == current
 
 
@@ -75,7 +77,7 @@ def test_install_uses_shared_checkout_and_the_same_revision_on_nodes(monkeypatch
     monkeypatch.setattr(runner, '_wait_ssh', lambda host: None)
     monkeypatch.setattr(remote.subprocess, 'run', lambda args, **kw: local_commands.append(args))
     # check_output internally calls run; keep source resolution using the real Git helper.
-    monkeypatch.setattr(runner, '_resolve_source', lambda: {
+    monkeypatch.setattr(runner, '_resolve_source', lambda **kwargs: {
         'commit': commit, 'repository': settings['repo']['url'], 'source_ref': 'HEAD'})
     monkeypatch.setattr(remote, 'verify_build', lambda source, provenance:
                         verified.append((source, provenance['commit'])) or {})
