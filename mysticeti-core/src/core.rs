@@ -27,6 +27,7 @@ use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 
 pub struct Core<H: BlockHandler> {
+    adversary: Arc<crate::adversary::Adversary>,
     block_manager: BlockManager,
     pending: VecDeque<(WalPosition, MetaStatement)>,
     last_own_block: OwnBlockData,
@@ -117,15 +118,26 @@ impl<H: BlockHandler> Core<H> {
 
         let epoch_manager = EpochManager::new();
 
-        let committer =
+        let adversary = crate::adversary::Adversary::new(
+            parameters.adversary.clone(),
+            authority,
+            committee.clone(),
+            block_store.clone(),
+            crate::consensus::DEFAULT_WAVE_LENGTH,
+            parameters.number_of_leaders,
+            parameters.enable_pipelining,
+        );
+        let mut committer =
             UniversalCommitterBuilder::new(committee.clone(), block_store.clone(), metrics.clone())
                 .with_number_of_leaders(parameters.number_of_leaders)
                 .with_pipeline(parameters.enable_pipelining)
                 .build();
+        committer.set_adversary(adversary.clone());
         tracing::info!("Pipeline enabled: {}", parameters.enable_pipelining);
         tracing::info!("Number of leaders: {}", parameters.number_of_leaders);
 
         let mut this = Self {
+            adversary,
             block_manager,
             pending,
             last_own_block,
@@ -271,7 +283,9 @@ impl<H: BlockHandler> Core<H> {
             block
         );
 
-        let block = Data::new(block);
+        let (block, extra_forks) = self
+            .adversary
+            .prepare_proposal(Data::new(block), &self.signer);
         if block.serialized_bytes().len() > crate::wal::MAX_ENTRY_SIZE / 2 {
             // Sanity check for now
             panic!(
@@ -294,7 +308,15 @@ impl<H: BlockHandler> Core<H> {
             next_entry,
             block: block.clone(),
         };
-        (&mut self.wal_writer, &self.block_store).insert_own_block(&self.last_own_block);
+        if extra_forks.is_empty() {
+            (&mut self.wal_writer, &self.block_store).insert_own_block(&self.last_own_block);
+        } else {
+            self.block_store.persist_own_block_with_forks(
+                &self.last_own_block,
+                extra_forks,
+                &mut self.wal_writer,
+            );
+        }
 
         if self.options.fsync {
             self.wal_writer.sync().expect("Wal sync failed");
@@ -428,6 +450,10 @@ impl<H: BlockHandler> Core<H> {
         self.recovered_committed_blocks
             .take()
             .expect("take_recovered_committed_blocks called twice")
+    }
+
+    pub(crate) fn adversary(&self) -> Arc<crate::adversary::Adversary> {
+        self.adversary.clone()
     }
 
     pub fn block_store(&self) -> &BlockStore {

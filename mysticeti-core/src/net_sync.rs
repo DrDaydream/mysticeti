@@ -33,6 +33,7 @@ pub struct NetworkSyncer<H: BlockHandler, C: CommitObserver> {
 pub struct NetworkSyncerInner<H: BlockHandler, C: CommitObserver> {
     pub syncer: CoreThreadDispatcher<H, Arc<Notify>, C>,
     pub block_store: BlockStore,
+    pub(crate) adversary: Arc<crate::adversary::Adversary>,
     pub notify: Arc<Notify>,
     committee: Arc<Committee>,
     stop: mpsc::Sender<()>,
@@ -50,6 +51,7 @@ impl<H: BlockHandler + 'static, C: CommitObserver + 'static> NetworkSyncer<H, C>
         metrics: Arc<Metrics>,
     ) -> Self {
         let authority_index = core.authority();
+        let adversary = core.adversary();
         let handle = Handle::current();
         let notify = Arc::new(Notify::new());
         // todo - ugly, probably need to merge syncer and core
@@ -73,6 +75,7 @@ impl<H: BlockHandler + 'static, C: CommitObserver + 'static> NetworkSyncer<H, C>
         let (epoch_sender, epoch_receiver) = mpsc::channel(1);
         epoch_sender.try_send(()).unwrap(); // occupy the only available permit, so that all other calls to send() will block
         let inner = Arc::new(NetworkSyncerInner {
+            adversary,
             notify,
             syncer,
             block_store,
@@ -177,6 +180,7 @@ impl<H: BlockHandler + 'static, C: CommitObserver + 'static> NetworkSyncer<H, C>
             .ok()?;
 
         let mut disseminator = BlockDisseminator::new(
+            connection.peer_id as AuthorityIndex,
             connection.sender.clone(),
             inner.clone(),
             SynchronizerParameters::default(),

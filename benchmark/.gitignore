@@ -1,0 +1,14 @@
+settings.json
+settings.before*.json
+.mysticeti-*.lock
+results/
+__pycache__/
+.pytest_cache/
+*.py[cod]
+*.pem
+*.key
+id_rsa*
+id_ed25519*
+.env
+.env.*
+.venv/

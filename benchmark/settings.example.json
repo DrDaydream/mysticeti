@@ -1,0 +1,58 @@
+{
+  "testbed_id": "mysticeti-ubuntu24",
+  "key": {
+    "name": "orca-amazon",
+    "path": "/home/ubuntu/.ssh/orca-amazon.pem"
+  },
+  "repo": {
+    "url": "https://github.com/DrDaydream/mysticeti.git",
+    "ref": "HEAD"
+  },
+  "instances": {
+    "type": "m5.8xlarge",
+    "regions": [
+      "us-east-1",
+      "eu-north-1",
+      "ap-southeast-2",
+      "us-west-1",
+      "ap-northeast-1"
+    ],
+    "volume_size": 200
+  },
+  "remote": {
+    "source_dir": "/home/ubuntu/experiments/mysticeti-source",
+    "run_dir": "/home/ubuntu/experiments/mysticeti-runs",
+    "build_jobs": 4,
+    "parallelism": 5
+  },
+  "ssh_cidrs": [],
+  "benchmark": {
+    "nodes": 10,
+    "faults": 0,
+    "rate": 5000,
+    "tx_size": 512,
+    "duration": 120,
+    "warmup": 20,
+    "runs": 1,
+    "leaders": 2,
+    "wave_length": 3,
+    "enable_synchronizer": true,
+    "leader_schedule": "round_robin",
+    "adversary": {
+      "mode": "A0",
+      "byzantine_authorities": [],
+      "seed": 1,
+      "start_after_ms": null,
+      "duration_ms": 60000,
+      "delay_ms": 200,
+      "late_delay_ms": 1000,
+      "max_pending_messages": 4096,
+      "max_pending_bytes": 67108864,
+      "max_extra_bytes_per_round": 8388608,
+      "target_authority": null,
+      "target_round": null
+    },
+    "leader_timeout_ms": 1000,
+    "scrape_interval": 5
+  }
+}

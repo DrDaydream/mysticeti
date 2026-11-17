@@ -17,12 +17,17 @@ use super::{base_committer::BaseCommitter, LeaderStatus, DEFAULT_WAVE_LENGTH};
 /// It can be configured to use a combination of different commit strategies, including
 /// multi-leaders, backup leaders, and pipelines.
 pub struct UniversalCommitter {
+    adversary: Option<Arc<crate::adversary::Adversary>>,
     block_store: BlockStore,
     committers: Vec<BaseCommitter>,
     metrics: Arc<Metrics>,
 }
 
 impl UniversalCommitter {
+    pub(crate) fn set_adversary(&mut self, adversary: Arc<crate::adversary::Adversary>) {
+        self.adversary = Some(adversary);
+    }
+
     /// Try to commit part of the dag. This function is idempotent and returns a list of
     /// ordered decided leaders.
     #[tracing::instrument(skip_all, fields(last_decided = %last_decided))]
@@ -58,6 +63,17 @@ impl UniversalCommitter {
 
                 leaders.push_front(status);
             }
+        }
+
+        // Observation only: retain the original decision rules and prefix.
+        if let Some(adversary) = &self.adversary {
+            adversary.observe_leaders(
+                leaders
+                    .iter()
+                    .skip_while(|x| (x.round(), x.authority()) != last_decided_round_authority)
+                    .skip(1)
+                    .filter(|x| x.round() > 0),
+            );
         }
 
         // The decided sequence is the longest prefix of decided leaders.
@@ -157,6 +173,7 @@ impl UniversalCommitterBuilder {
         }
 
         UniversalCommitter {
+            adversary: None,
             block_store: self.block_store,
             committers,
             metrics: self.metrics,

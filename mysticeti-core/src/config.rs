@@ -37,6 +37,8 @@ pub struct Identifier {
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Parameters {
+    #[serde(default)]
+    pub adversary: crate::adversary::AdversaryConfig,
     pub identifiers: Vec<Identifier>,
     pub wave_length: RoundNumber,
     pub leader_timeout: Duration,
@@ -49,6 +51,7 @@ pub struct Parameters {
 impl Default for Parameters {
     fn default() -> Self {
         Self {
+            adversary: Default::default(),
             identifiers: Vec::new(),
             wave_length: Self::DEFAULT_WAVE_LENGTH,
             leader_timeout: Self::DEFAULT_LEADER_TIMEOUT,

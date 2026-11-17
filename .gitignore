@@ -7,3 +7,5 @@ dryrun-*
 local-testbed*
 *.log.ansi
 results/
+/.mysticeti-build.json
+/.mysticeti-build.json.tmp

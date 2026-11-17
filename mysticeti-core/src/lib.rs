@@ -1,6 +1,7 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+pub mod adversary;
 pub mod block_handler;
 mod block_manager;
 mod block_store;

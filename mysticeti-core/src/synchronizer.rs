@@ -3,6 +3,7 @@
 
 use std::{collections::HashMap, env, sync::Arc, time::Duration};
 
+use crate::adversary::{ScheduledSender, SendPath};
 use futures::future::join_all;
 use rand::{seq::SliceRandom, thread_rng};
 use tokio::sync::mpsc;
@@ -52,6 +53,8 @@ impl Default for SynchronizerParameters {
 pub struct BlockDisseminator<H: BlockHandler, C: CommitObserver> {
     /// The sender to the network.
     sender: mpsc::Sender<NetworkMessage>,
+    scheduled_sender: ScheduledSender,
+    schedule_task: Option<JoinHandle<()>>,
     /// The inner state of the network syncer.
     inner: Arc<NetworkSyncerInner<H, C>>,
     /// The handle of the task disseminating our own blocks.
@@ -70,13 +73,17 @@ where
     C: CommitObserver + 'static,
 {
     pub fn new(
+        peer: AuthorityIndex,
         sender: mpsc::Sender<NetworkMessage>,
         inner: Arc<NetworkSyncerInner<H, C>>,
         parameters: SynchronizerParameters,
         metrics: Arc<Metrics>,
     ) -> Self {
+        let (scheduled_sender, schedule_task) = inner.adversary.sender(peer, sender.clone());
         Self {
             sender,
+            scheduled_sender,
+            schedule_task,
             inner,
             own_blocks: None,
             other_blocks: Vec::new(),
@@ -96,6 +103,10 @@ where
             waiters.push(handle);
         }
         join_all(waiters).await;
+        if let Some(task) = self.schedule_task.take() {
+            task.abort();
+            task.await.ok();
+        }
     }
 
     pub async fn send_blocks(
@@ -109,7 +120,11 @@ where
             let found = stored_block.is_some();
             match stored_block {
                 // TODO: Should we be able to send more than one block in a single network message?
-                Some(block) => self.sender.send(NetworkMessage::Block(block)).await.ok()?,
+                Some(block) => {
+                    self.scheduled_sender
+                        .send_block(block, SendPath::Fetch)
+                        .await?
+                }
                 None => missing.push(reference),
             }
             self.metrics
@@ -130,7 +145,7 @@ where
         }
 
         let handle = Handle::current().spawn(Self::stream_own_blocks(
-            self.sender.clone(),
+            self.scheduled_sender.clone(),
             self.inner.clone(),
             round,
             self.parameters.batch_size,
@@ -139,7 +154,7 @@ where
     }
 
     async fn stream_own_blocks(
-        to: mpsc::Sender<NetworkMessage>,
+        to: ScheduledSender,
         inner: Arc<NetworkSyncerInner<H, C>>,
         mut round: RoundNumber,
         batch_size: usize,
@@ -149,7 +164,7 @@ where
             let blocks = inner.block_store.get_own_blocks(round, batch_size);
             for block in blocks {
                 round = block.round();
-                to.send(NetworkMessage::Block(block)).await.ok()?;
+                to.send_block(block, SendPath::Own).await?;
             }
             notified.await
         }
@@ -165,7 +180,7 @@ where
         }
 
         let handle = Handle::current().spawn(Self::stream_others_blocks(
-            self.sender.clone(),
+            self.scheduled_sender.clone(),
             self.inner.clone(),
             round,
             author,
@@ -176,7 +191,7 @@ where
     }
 
     async fn stream_others_blocks(
-        to: mpsc::Sender<NetworkMessage>,
+        to: ScheduledSender,
         inner: Arc<NetworkSyncerInner<H, C>>,
         mut round: RoundNumber,
         author: AuthorityIndex,
@@ -189,7 +204,7 @@ where
                 .get_others_blocks(round, author, batch_size);
             for block in blocks {
                 round = block.round();
-                to.send(NetworkMessage::Block(block)).await.ok()?;
+                to.send_block(block, SendPath::Forward).await?;
             }
             sleep(stream_interval).await;
         }

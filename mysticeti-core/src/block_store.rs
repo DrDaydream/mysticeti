@@ -74,6 +74,12 @@ impl BlockStore {
                     builder.block(pos, &block);
                     block
                 }
+                WAL_ENTRY_ADVERSARY_BLOCK => {
+                    // Extra local forks are available by digest, but are not replayed
+                    // as another application proposal or as pending received payload.
+                    Data::<StatementBlock>::from_bytes(data)
+                        .expect("Failed to deserialize adversary fork from wal")
+                }
                 WAL_ENTRY_PAYLOAD => {
                     builder.payload(pos, data);
                     continue;
@@ -117,6 +123,32 @@ impl BlockStore {
     pub fn insert_block(&self, block: Data<StatementBlock>, position: WalPosition) {
         self.metrics.block_store_entries.inc();
         self.inner.write().add_loaded(position, block);
+    }
+
+    pub(crate) fn persist_own_block_with_forks(
+        &self,
+        primary: &OwnBlockData,
+        forks: Vec<Data<StatementBlock>>,
+        writer: &mut WalWriter,
+    ) {
+        assert!(forks.len() <= 1, "At most two versions per own proposal");
+        let mut entries = vec![(primary.write_to_wal(writer), primary.block.clone())];
+        for fork in forks {
+            assert_eq!(fork.author_round(), primary.block.author_round());
+            let position = writer
+                .write(WAL_ENTRY_ADVERSARY_BLOCK, fork.serialized_bytes())
+                .expect("Writing adversary fork to wal failed");
+            entries.push((position, fork));
+        }
+        self.metrics
+            .block_store_entries
+            .inc_by(entries.len() as u64);
+        // Publish the primary cursor and every alternative in one critical section.
+        // A streaming reader must never advance past a half-published fork pair.
+        let mut inner = self.inner.write();
+        for (position, block) in entries {
+            inner.add_loaded(position, block);
+        }
     }
 
     pub fn get_block(&self, reference: BlockReference) -> Option<Data<StatementBlock>> {
@@ -255,7 +287,7 @@ impl BlockStore {
                     .read(position)
                     .expect("Failed to read wal");
                 match tag {
-                    WAL_ENTRY_BLOCK => {
+                    WAL_ENTRY_BLOCK | WAL_ENTRY_ADVERSARY_BLOCK => {
                         Data::from_bytes(data).expect("Failed to deserialize data from wal")
                     }
                     WAL_ENTRY_OWN_BLOCK => {
@@ -456,10 +488,11 @@ impl BlockStoreInner {
         if reference.round > self.last_own_block.map(|r| r.round).unwrap_or_default() {
             self.last_own_block = Some(*reference);
         }
-        assert!(self
-            .own_blocks
-            .insert(reference.round, reference.digest)
-            .is_none());
+        // Keep one canonical cursor entry while retaining every digest in index.
+        // Core persists the primary proposal before any adversarial alternatives.
+        self.own_blocks
+            .entry(reference.round)
+            .or_insert(reference.digest);
     }
 
     pub fn last_own_block(&self) -> Option<BlockReference> {
@@ -474,6 +507,7 @@ pub const WAL_ENTRY_STATE: Tag = 4;
 // Commit entry includes both commit interpreter incremental state and committed transactions aggregator
 // todo - They could be separated for better performance, but this will require catching up for committed transactions aggregator state
 pub const WAL_ENTRY_COMMIT: Tag = 5;
+const WAL_ENTRY_ADVERSARY_BLOCK: Tag = 6;
 
 impl BlockWriter for (&mut WalWriter, &BlockStore) {
     fn insert_block(&mut self, block: Data<StatementBlock>) -> WalPosition {
@@ -549,5 +583,79 @@ mod test {
         let next_entry = WalPosition::default();
         let serialized = bincode::serialize(&next_entry).unwrap();
         assert_eq!(serialized.len(), OWN_BLOCK_HEADER_SIZE);
+    }
+
+    #[test]
+    fn own_forks_preserve_primary_cursor_and_survive_wal_replay() {
+        crate::crypto::with_real_crypto_for_test(|| {
+            check_own_fork_replay();
+        });
+    }
+
+    fn check_own_fork_replay() {
+        use crate::{crypto::dummy_signer, test_util::test_metrics, wal::walf};
+
+        let committee = Committee::new_test(vec![1; 4]);
+        let file = tempfile::tempfile().unwrap();
+        let recovery_file = file.try_clone().unwrap();
+        let (mut writer, reader) = walf(file).unwrap();
+        let recovered = BlockStore::open(0, Arc::new(reader), &writer, test_metrics(), &committee);
+        let store = recovered.block_store;
+        let genesis: Vec<_> = committee
+            .authorities()
+            .map(|a| *StatementBlock::new_genesis(a).reference())
+            .collect();
+        let primary = Data::new(StatementBlock::new_with_signer(
+            0,
+            1,
+            genesis.clone(),
+            vec![],
+            1,
+            false,
+            &dummy_signer(),
+        ));
+        let mut fork_parents = genesis;
+        fork_parents[1..].reverse();
+        let fork = Data::new(StatementBlock::new_with_signer(
+            0,
+            1,
+            fork_parents,
+            vec![],
+            1,
+            false,
+            &dummy_signer(),
+        ));
+        primary.verify(&committee).unwrap();
+        fork.verify(&committee).unwrap();
+        assert_ne!(primary.reference(), fork.reference());
+        store.persist_own_block_with_forks(
+            &OwnBlockData {
+                next_entry: WalPosition::MAX,
+                block: primary.clone(),
+            },
+            vec![fork.clone()],
+            &mut writer,
+        );
+        assert_eq!(store.get_own_blocks(0, 10), vec![primary.clone()]);
+        assert_eq!(store.get_block(*fork.reference()), Some(fork.clone()));
+        assert_eq!(store.get_blocks_at_authority_round(0, 1).len(), 2);
+        writer.sync().unwrap();
+        drop(store);
+        drop(writer);
+
+        let (writer, reader) = walf(recovery_file).unwrap();
+        let recovered = BlockStore::open(0, Arc::new(reader), &writer, test_metrics(), &committee);
+        assert_eq!(recovered.last_own_block.unwrap().block, primary.clone());
+        assert_eq!(
+            recovered.block_store.get_own_blocks(0, 10),
+            vec![primary.clone()]
+        );
+        assert_eq!(
+            recovered.block_store.get_block(*fork.reference()),
+            Some(fork)
+        );
+        // A stored extra fork is not another application proposal during replay.
+        assert_eq!(recovered.unprocessed_blocks, vec![primary]);
+        assert!(recovered.pending.is_empty());
     }
 }
