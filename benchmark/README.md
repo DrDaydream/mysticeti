@@ -33,7 +33,18 @@ git rev-parse HEAD
 fab install
 ```
 
-只有 `fab install` 安装依赖并编译。控制机和工作节点使用同一解析后提交、Rust `1.72.1`、`--locked --release` 与 `-C target-cpu=native`。`remote.source_dir` 是独立构建 checkout，默认 `/home/ubuntu/experiments/mysticeti-source`；不要设置成控制机的适配器 checkout。已有不同 origin 或未保存文件时会拒绝覆盖；原来的上游源码目录请保留，另选新的构建路径。
+只有 `fab install` 安装依赖并编译。控制机和工作节点使用同一解析后提交、Rust `1.72.1`、`--locked --release` 与 `-C target-cpu=native`。`remote.source_dir` 默认 `/home/ubuntu/experiments/mysticeti`，支持直接使用控制机当前仓库。此时 `repo.ref` 使用 `HEAD`（或解析到同一提交的引用），安装保留当前分支和本地 settings，不另建控制机源码目录。独立源码目录仍然兼容；已有不同 origin 或未保存文件时会拒绝覆盖。
+
+在原来的 `/home/ubuntu/experiments/mysticeti/benchmark` 目录按顺序执行：
+
+```bash
+fab create --nodes 2
+fab install
+fab remote --adversary A0
+fab remote --adversary A3 --byzantine 3
+```
+
+`create --nodes 2` 在每个配置区域新增两台机器；已有机器时从 `fab install` 继续即可。切换敌手模式只需再次执行 `fab remote`。
 
 编译后运行 genesis 命令检查二进制是否导出完整 adversary schema，再写入 `.mysticeti-build.json`：仓库、完整提交、工具链、编译参数、二进制 SHA-256 与 `adversary_schema=1`。`results/installation.json` 汇总各机器记录。缺失 schema 的旧 manifest、错误提交或校验和均被拒绝。
 

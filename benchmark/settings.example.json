@@ -20,7 +20,7 @@
     "volume_size": 200
   },
   "remote": {
-    "source_dir": "/home/ubuntu/experiments/mysticeti-source",
+    "source_dir": "/home/ubuntu/experiments/mysticeti",
     "run_dir": "/home/ubuntu/experiments/mysticeti-runs",
     "build_jobs": 4,
     "parallelism": 5

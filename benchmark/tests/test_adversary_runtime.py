@@ -78,10 +78,10 @@ def test_fabric_remote_parser_accepts_attack_selector_and_count(monkeypatch, tmp
     assert captured[0]['adversary']['start_after_ms'] == 30000
 
 
-def test_install_cannot_reuse_the_controller_adapter_checkout():
+def test_install_rejects_a_source_nested_inside_the_controller_checkout():
     from mysticeti_aws import remote
     settings = copy.deepcopy(DEFAULTS)
-    settings['remote']['source_dir'] = str(remote.PACKAGE_DIR.parent)
+    settings['remote']['source_dir'] = str(remote.PACKAGE_DIR.parent / 'nested-source')
     runner = remote.Runner(settings, cloud=SimpleNamespace())
     with pytest.raises(ValueError, match='source_dir'):
         runner._resolve_source()

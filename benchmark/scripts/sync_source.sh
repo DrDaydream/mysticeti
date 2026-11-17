@@ -30,5 +30,9 @@ cd -- "$source_dir"
 [[ -z "$(git status --porcelain --untracked-files=normal)" ]] || {
     echo 'Commit or save source edits before fab install' >&2; exit 1;
 }
-git fetch --depth 1 origin "$revision"
-git checkout --detach "$revision"
+# Reuse the current checkout in place, including the controller adapter.
+# Do not detach its branch or fetch when it already has the requested source.
+if [[ "$(git rev-parse HEAD)" != "$revision" ]]; then
+    git fetch --depth 1 origin "$revision"
+    git checkout --detach "$revision"
+fi

@@ -15,7 +15,7 @@ DEFAULTS = {
     'instances': {'type': 'm5.8xlarge', 'regions': [
         'us-east-1', 'eu-north-1', 'ap-southeast-2', 'us-west-1', 'ap-northeast-1'
     ], 'volume_size': 200},
-    'remote': {'source_dir': '/home/ubuntu/experiments/mysticeti-source',
+    'remote': {'source_dir': '/home/ubuntu/experiments/mysticeti',
                'run_dir': '/home/ubuntu/experiments/mysticeti-runs',
                'build_jobs': 4, 'parallelism': 5},
     'ssh_cidrs': [],

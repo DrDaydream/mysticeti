@@ -72,9 +72,16 @@ class Runner:
     def _resolve_source(self):
         checkout = PACKAGE_DIR.parent.resolve()
         source = self.source.resolve()
-        if source == checkout or source in checkout.parents or checkout in source.parents:
-            raise ValueError('remote.source_dir must be separate from the controller adapter checkout')
-        return resolve_source(checkout, self.settings['repo'])
+        if source in checkout.parents or checkout in source.parents:
+            raise ValueError('remote.source_dir must equal the controller checkout or be a separate directory')
+        provenance = resolve_source(checkout, self.settings['repo'])
+        if source == checkout:
+            head = subprocess.check_output(['git', '-C', str(checkout), 'rev-parse', 'HEAD'],
+                                           text=True).strip()
+            if provenance['commit'] != head:
+                raise ValueError('When building in the controller checkout, repo.ref must resolve to HEAD; '
+                                 'set repo.ref to HEAD to build the current checkout')
+        return provenance
 
     def _ssh(self, host):
         if self._key is None:
