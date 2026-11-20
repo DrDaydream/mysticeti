@@ -336,6 +336,9 @@ impl Metrics {
             connection_latency_sender,
         };
 
+        // Export genuine zero counters before the first shared transaction
+        // commits. Merely creating the child does not observe a latency sample.
+        metrics.latency_s.with_label_values(&["shared"]);
         (Arc::new(metrics), reporter)
     }
 }
