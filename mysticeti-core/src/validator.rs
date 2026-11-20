@@ -107,6 +107,7 @@ impl Validator {
             tps,
             transaction_size,
             initial_delay,
+            metrics.benchmark.clone(),
         );
         let committed_transaction_log =
             TransactionLog::start(config.storage().committed_transactions_log())
@@ -140,8 +141,19 @@ impl Validator {
             parameters.wave_length(),
             commit_handler,
             parameters.shutdown_grace_period(),
-            metrics,
+            metrics.clone(),
         );
+
+        metrics.benchmark_ready.set(1);
+        let benchmark = metrics.benchmark.clone();
+        if benchmark.enabled() {
+            crate::runtime::Handle::current().spawn(async move {
+                if let Err(error) = benchmark.control(authority as u64).await {
+                    metrics.benchmark_ready.set(0);
+                    tracing::error!(event="benchmark_failed", authority, %error);
+                }
+            });
+        }
 
         tracing::info!("Validator {authority} listening on {network_address}");
         tracing::info!("Validator {authority} exposing metrics on {metrics_address}");

@@ -23,6 +23,7 @@ from .metrics import parse_snapshot, summarize
 from .report import format_summary
 from .settings import ADVERSARY_DEFAULTS, load_allocation, validate_benchmark
 from .source import resolve_source
+from .timing import make_plan, validate_receipts, summarize_windows
 
 PACKAGE_DIR = Path(__file__).resolve().parents[1]
 
@@ -237,13 +238,20 @@ class Runner:
                     '#!/usr/bin/env bash', 'set -euo pipefail',
                     f'export TPS={allocation["per_node_tps"]}', f'export TRANSACTION_SIZE={parameters["tx_size"]}',
                     'export CONSENSUS_ONLY=1', syncer_env, 'export INITIAL_DELAY=0', 'export RUST_LOG=info',
+                    f'export BENCHMARK_CONTROL_DIR={shlex.quote(remote_directory)}',
+                    f'export BENCHMARK_RUN_ID={shlex.quote(directory.name)}',
                     f'exec {shlex.join(node_args)} > {shlex.quote(remote_directory + "/node.log")} 2>&1', '',
                 ])
                 connection.put(io.BytesIO(script.encode()), remote=f'{remote_directory}/start.sh')
+        self._parallel(launch, active)
+
+        def start_node(item):
+            index, host = item
+            with self._ssh(host) as connection:
                 command = shlex.join(['bash', f'{remote_directory}/start.sh'])
                 connection.run(f'tmux -L {self.socket} new-session -d -s node-{index} {shlex.quote(command)}', hide=True)
         self.launch_started = time.monotonic()
-        self._parallel(launch, active)
+        self._parallel(start_node, active)
         self.launch_completed = time.monotonic()
 
     def _collect(self, active, committee_size):
@@ -258,6 +266,8 @@ class Runner:
                     hide=True, timeout=20)
                 end = time.monotonic()
                 snapshot = parse_snapshot(result.stdout)
+                if not re.search(r'^benchmark_ready\s+1(?:\.0)?\s*$', result.stdout, re.M):
+                    raise ValueError('Validator runtime is not ready')
                 return str(index), {'metrics': snapshot, 'monotonic': (start + end) / 2,
                                     'request_seconds': end - start, 'text': result.stdout}
         return dict(self._parallel(collect, active))
@@ -294,6 +304,64 @@ class Runner:
             return None
         return [error for error in self._parallel(download, active) if error]
 
+    def _read_control(self, active, remote_directory, filename):
+        def read(item):
+            index, host = item
+            with self._ssh(host) as connection:
+                command = (f'tmux -L {self.socket} has-session -t node-{index} && '
+                           f'cat -- {shlex.quote(remote_directory + "/" + filename)}')
+                result = connection.run(command, hide=True, timeout=15)
+                return str(index), yaml.safe_load(result.stdout)
+        return dict(self._parallel(read, active))
+
+    def _measure_window(self, active, committee_size, parameters, directory, remote_directory, record):
+        subprocess.run(['chronyc', 'waitsync', '1', '0.01', '0.0', '1'], check=True)
+        plan = make_plan(record['run_id'], int(time.time() * 1000) + 30000,
+                         parameters['warmup'], parameters['duration'])
+        record['timeline'] = plan
+        record['timing_limits'] = dict(lead_seconds=30, arm_guard_seconds=5,
+                                      max_input_lateness_ms=500, final_timeout_seconds=30)
+        save_json(directory / 'run.json', record)
+        expected = [str(index) for index, _ in active]
+        arm_deadline = time.monotonic() + (plan['load_ms'] / 1000 - time.time()) - 5
+        end_deadline = time.monotonic() + (plan['end_ms'] / 1000 - time.time())
+
+        def arm(item):
+            _, host = item
+            with self._ssh(host) as connection:
+                temp = remote_directory + '/start.yaml.tmp'
+                connection.put(io.BytesIO(yaml.safe_dump(plan).encode()), remote=temp)
+                connection.run(shlex.join(['mv', '--', temp, remote_directory + '/start.yaml']), hide=True, timeout=15)
+        self._parallel(arm, active)
+        while True:
+            try:
+                receipts = self._read_control(active, remote_directory, 'armed.yaml')
+                validate_receipts(plan, receipts, expected, int(time.time() * 1000))
+                if time.monotonic() >= arm_deadline:
+                    raise ValueError('Arm deadline expired')
+                break
+            except Exception:
+                if time.monotonic() >= arm_deadline:
+                    raise
+                time.sleep(0.2)
+        save_json(directory / 'armed.json', receipts)
+        sequence = 0
+        while time.monotonic() < end_deadline:
+            time.sleep(min(parameters['scrape_interval'], max(0, end_deadline - time.monotonic())))
+            samples = self._collect(active, committee_size)
+            self._record(directory, f'sample-{sequence:04}', samples)
+            sequence += 1
+        while True:
+            try:
+                windows = self._read_control(active, remote_directory, 'window.yaml')
+                break
+            except Exception:
+                if time.monotonic() >= end_deadline + 30:
+                    raise
+                time.sleep(0.2)
+        save_json(directory / 'windows.json', windows)
+        return summarize_windows(plan, windows, expected)
+
     def _run_once(self, hosts, parameters):
         parameters = validate_benchmark(parameters)
         run_id = datetime.now(timezone.utc).strftime('run-%Y%m%dT%H%M%SZ-') + uuid.uuid4().hex[:8]
@@ -303,6 +371,7 @@ class Runner:
         active = list(enumerate(hosts[:len(hosts) - parameters['faults']]))
         allocation = load_allocation(parameters['rate'], len(hosts), parameters['faults'])
         record = {'run_id': run_id, 'commit': self.provenance.get('commit'), 'source': self.provenance, 'status': 'starting', 'parameters': parameters,
+                  'timing_schema': 2,
                   'load': allocation, 'builds': getattr(self, 'installed', []),
                   'controller_build': getattr(self, 'controller_build', None),
                   'adversary': parameters['adversary'],
@@ -322,29 +391,8 @@ class Runner:
                 raise RuntimeError('Could not stop a previous experiment: ' + '\n'.join(previous_errors))
             self._configure_and_start(hosts, parameters, directory, remote_directory)
             self._wait_ready(active, len(hosts))
-            print(f'All active nodes ready. Warming up for {parameters["warmup"]}s...', flush=True)
-            deadline = time.monotonic() + parameters['warmup']
-            record['launch_spread_seconds'] = getattr(self, 'launch_completed', deadline) - getattr(self, 'launch_started', deadline)
-            while time.monotonic() < deadline:
-                time.sleep(min(parameters['scrape_interval'], max(0, deadline - time.monotonic())))
-                self._collect(active, len(hosts))
-            before = self._collect(active, len(hosts))
-            self._record(directory, 'before', before)
-            start = time.monotonic()
-            deadline = start + parameters['duration']
-            sequence = 0
-            while True:
-                time.sleep(min(parameters['scrape_interval'], max(0, deadline - time.monotonic())))
-                after = self._collect(active, len(hosts))
-                sequence += 1
-                finished = time.monotonic() >= deadline
-                self._record(directory, 'after' if finished else f'sample-{sequence:04}', after)
-                print(f'Measuring: {time.monotonic() - start:.1f}/{parameters["duration"]}s', flush=True)
-                if finished:
-                    break
-            elapsed = {index: after[index]['monotonic'] - before[index]['monotonic'] for index in before}
-            summary = summarize({i: s['metrics'] for i, s in before.items()},
-                                {i: s['metrics'] for i, s in after.items()}, elapsed)
+            print('All active nodes ready; scheduling a common measurement window.', flush=True)
+            summary = self._measure_window(active, len(hosts), parameters, directory, remote_directory, record)
             summary.update(load=allocation, commit=self.provenance.get('commit'), run_id=run_id,
                            adversary=parameters['adversary'], crashed_authorities=record['crashed_authorities'],
                            enable_synchronizer=parameters['enable_synchronizer'])
@@ -364,6 +412,8 @@ class Runner:
             record['error'] = str(error) or type(error).__name__
             problem = error
         finally:
+            if hasattr(self, 'launch_started'):
+                record['launch_dispatch_seconds'] = getattr(self, 'launch_completed', time.monotonic()) - self.launch_started
             print('Stopping experiment nodes and downloading logs...', flush=True)
             stop_errors = self._stop(hosts)
             log_errors = self._download_logs(active, directory, remote_directory)

@@ -427,7 +427,8 @@ impl<H: ProcessedTransactionHandler<TransactionLocator> + Send + Sync> CommitObs
         block_store: &BlockStore,
         committed_leaders: Vec<Data<StatementBlock>>,
     ) -> Vec<CommittedSubDag> {
-        let current_timestamp = runtime::timestamp_utc();
+        let mut benchmark_batch = self.metrics.benchmark.begin();
+        let current_timestamp = benchmark_batch.timestamp;
 
         let committed = self
             .commit_interpreter
@@ -450,6 +451,8 @@ impl<H: ProcessedTransactionHandler<TransactionLocator> + Send + Sync> CommitObs
                     }
                 }
                 for (locator, transaction) in block.shared_transactions() {
+                    benchmark_batch.observe(current_timestamp.saturating_sub(
+                        TransactionGenerator::extract_timestamp(transaction)));
                     self.update_metrics(
                         transaction_time.get(&locator),
                         current_timestamp,
@@ -462,6 +465,7 @@ impl<H: ProcessedTransactionHandler<TransactionLocator> + Send + Sync> CommitObs
         self.metrics
             .commit_handler_pending_certificates
             .set(self.transaction_votes.len() as i64);
+        benchmark_batch.finish();
         committed
     }
 

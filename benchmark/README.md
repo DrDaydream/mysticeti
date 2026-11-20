@@ -92,7 +92,7 @@ A1 有限时间扣留 Byzantine 提议；A2 与 DAG 无关地分发两个版本�
 }
 ```
 
-省略 `start_after_ms` 或设置 null，表示 `warmup * 1000`，会考虑 CLI 的 `--warmup`；最终 YAML 使用整数。`duration_ms` 是攻击时间，默认 60 秒。`benchmark.duration` 是 warmup 后的测量时长，默认 120 秒。要求 `start_after_ms + duration_ms + late_delay_ms <= (warmup + duration) * 1000`，并且 `0 < delay_ms <= late_delay_ms`，留出恢复时间。短 A0 基线不要求容纳活动攻击窗口。
+省略 `start_after_ms` 或设置 null，表示共同测量起点之后 0 毫秒；最终 YAML 使用整数。`duration_ms` 是攻击时间，默认 60 秒。`benchmark.duration` 是 warmup 后的测量时长，默认 120 秒。要求 `start_after_ms + duration_ms + late_delay_ms <= duration * 1000`，并且 `0 < delay_ms <= late_delay_ms`，留出恢复时间。短 A0 基线不要求容纳活动攻击窗口。
 
 `target_authority` 必须在固定 Byzantine 集合里。`target_round` 如提供必须为正，并确实选出该身份（或未指定身份时的某个固定 Byzantine 身份）。开启 pipeline 后第 r 轮的 leaders 为 `(r + offset) % n`，其中 `offset=0..leaders-1`。只给身份时由策略选择符合条件的轮次；两者均为空时使用策略找到的最早合适目标。
 
@@ -100,7 +100,7 @@ A1 有限时间扣留 Byzantine 提议；A2 与 DAG 无关地分发两个版本�
 
 此前适配器将该开关映射反了：历史结果中的 `enable_synchronizer=true` 不能证明补块实际启用。修复只改变 Python 生成的节点启动环境；在原控制目录直接执行 `fab remote` 即可复用现有二进制，无需重新编译。修复后需重新运行实验，旧采样不会因此变化；是否恢复 A2–A5 的提交，需要实际运行验证。
 
-攻击时间相对各节点 Core 初始化的本地单调时钟。Fabric 并行启动存在偏差，`run.json` 记录控制机观察的 `launch_spread_seconds`。测量 warmup 在所有运行节点就绪后开始，因此与节点攻击时间轴存在启动和就绪偏差；分析时对齐各节点日志，不能把相同毫秒设置当作全局同时启动。
+AWS 实验在所有运行节点的 runtime 就绪后，下发共同输入和测量时间计划。攻击偏移相对共同测量起点；各节点在接收计划时将 UTC 映射为本地单调时钟。`run.json` 保存 `timing_schema=2`、`timeline` 和控制机发出启动请求所用的 `launch_dispatch_seconds`；后者不是节点实际启动偏差。输入比测量提前 `warmup` 秒开始。未使用 AWS benchmark session 的普通节点仍采用进程本地计时。
 
 ## 结果与离线检查
 
@@ -112,9 +112,9 @@ A1 有限时间扣留 Byzantine 提议；A2 与 DAG 无关地分发两个版本�
 /usr/bin/python3 -m mysticeti_aws.report --latest
 ```
 
-也可以指定 `results/run-...` 目录。报告器优先读取 `samples.jsonl` 的完整 before/after 窗口重新计算，能恢复旧版本因零提交而未生成的汇总。输出保存在该轮 `summary.txt`，不改写历史 `run.json` 状态；没有完整窗口时显示 `N/A` 和诊断，不把部分采样冒充完整实验。
+也可以指定 `results/run-...` 目录。报告器对 schema 2 读取 `windows.json`，从各节点冻结的提交数和 E2E 总和重算；历史 schema 1 继续读取 `samples.jsonl` 的完整 before/after 窗口。输出保存在该轮 `summary.txt`，不改写历史 `run.json` 状态；没有完整窗口时显示 `N/A` 和诊断，不把部分采样冒充完整实验。
 
-`results/run-*` 保留 `run.json`、`summary.json`、`summary.csv`、生成的配置、原始 Prometheus 快照及节点日志。run manifest 包含全部有效攻击参数、固定 Byzantine/崩溃身份、wave/leader 设置、同步器状态、源码来源及各二进制记录；summary 同时保存攻击参数。CSV 继续记录逐副本吞吐与延迟。攻击效果、额外版本、commit/skip/undecided 和恢复需要结合节点事件分析。
+`results/run-*` 保留 `run.json`、`summary.json`、`summary.csv`、`armed.json`、`windows.json`、生成的配置、原始 Prometheus 快照及节点日志。run manifest 包含全部有效攻击参数、固定 Byzantine/崩溃身份、wave/leader 设置、同步器状态、源码来源及各二进制记录；summary 同时保存攻击参数。CSV 继续记录逐副本吞吐与延迟。攻击效果、额外版本、commit/skip/undecided 和恢复需要结合节点事件分析。
 
 离线 Python 检查不访问 AWS，也不编译 Rust。构建失败回归使用退出失败的假编译命令：
 
@@ -124,3 +124,24 @@ python3 -m pytest tests -q
 ```
 
 停止实验进程用 `fab kill`；停止专属 EC2 实例用 `fab stop`；恢复已有实例用 `fab start --max 2`。`fab destroy` 会终止这套专属标签的实例并移除相应安全组。
+## Common benchmark clock (timing schema 2)
+
+AWS runs initialize zero-valued shared metrics and require the validator runtime
+to be ready before arming a common start plan. A plan is distributed 30 seconds
+ahead of input start; all active replicas must acknowledge it at least 5 seconds
+before input starts. Input starts before measurement by `warmup` seconds.
+`adversary.start_after_ms` now means milliseconds after the common measurement
+start (default 0), and the attack plus recovery must fit inside `duration`.
+Input start more than 500ms late invalidates the run. Crash-disabled nodes do not
+participate in readiness; live Byzantine nodes do.
+
+Each node writes a frozen `window.yaml` for final committed shared transactions.
+The controller saves these as `windows.json`; SSH sampling time does not define
+the final window. Zero commits produce 0 TPS and unavailable E2E latency. E2E
+retains transaction submission timestamps and commit-callback observation time;
+transactions not committed in the measurement window have no latency sample.
+All-replica averages retain the existing arithmetic mean semantics. Legacy
+results can still be reconstructed with the old report path. Keep schema-2
+results in a new campaign/output directory and record the new source commit.
+
+适配 schema 2 的五协议矩阵工具现随仓库提供，见 [figure-tools/README.md](figure-tools/README.md)。更新控制机仓库后可直接使用该目录，或运行随附更新器备份并更新原工具包入口，无需再粘贴补丁。

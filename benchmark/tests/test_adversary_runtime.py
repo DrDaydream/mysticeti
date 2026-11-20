@@ -126,7 +126,7 @@ def test_fabric_remote_parser_accepts_attack_selector_and_count(monkeypatch, tmp
     assert len(captured) == 1
     assert captured[0]['adversary']['mode'] == 'A3'
     assert captured[0]['adversary']['byzantine_authorities'] == [0, 1]
-    assert captured[0]['adversary']['start_after_ms'] == 30000
+    assert captured[0]['adversary']['start_after_ms'] == 0
 
 
 def test_install_rejects_a_source_nested_inside_the_controller_checkout():

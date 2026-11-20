@@ -127,6 +127,7 @@ impl<H: BlockHandler> Core<H> {
             parameters.number_of_leaders,
             parameters.enable_pipelining,
         );
+        adversary.set_benchmark(metrics.benchmark.clone());
         let mut committer =
             UniversalCommitterBuilder::new(committee.clone(), block_store.clone(), metrics.clone())
                 .with_number_of_leaders(parameters.number_of_leaders)

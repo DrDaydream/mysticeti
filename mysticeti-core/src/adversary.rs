@@ -218,6 +218,7 @@ pub(crate) struct Adversary {
     number_of_leaders: usize,
     pipeline: bool,
     started: runtime::TimeInstant,
+    benchmark: Mutex<Option<Arc<crate::benchmark_session::Session>>>,
     state: Mutex<State>,
 }
 
@@ -250,7 +251,7 @@ impl Adversary {
                 authority, byzantine = ?config.byzantine_authorities, wave_length, number_of_leaders,
                 pipeline, start_after_ms = config.start_after_ms, duration_ms = config.duration_ms,
                 target_authority = ?config.target_authority, target_round = ?config.target_round,
-                "Bounded adversary uses local monotonic Core-start time");
+                "Adversary initialized; message queue uses local monotonic Core-start time");
         }
         Arc::new(Self {
             config,
@@ -261,12 +262,24 @@ impl Adversary {
             number_of_leaders,
             pipeline,
             started: runtime::TimeInstant::now(),
+            benchmark: Mutex::new(None),
             state: Mutex::new(State::default()),
         })
     }
 
     fn is_byzantine(&self, authority: AuthorityIndex) -> bool {
         self.config.byzantine_authorities.contains(&authority)
+    }
+
+    pub(crate) fn set_benchmark(&self, session: Arc<crate::benchmark_session::Session>) {
+        if session.enabled() { *self.benchmark.lock() = Some(session); }
+    }
+
+    fn attack_elapsed(&self, queue_elapsed: Duration) -> Option<Duration> {
+        match self.benchmark.lock().as_ref() {
+            Some(session) => session.elapsed(),
+            None => Some(queue_elapsed),
+        }
     }
 
     fn remaining_at(&self, elapsed: Duration) -> Option<Duration> {
@@ -399,7 +412,7 @@ impl Adversary {
                 tracing::info!(event = "adversary_outcome", mode = ?self.config.mode, seed = self.config.seed,
                     authority = self.authority, target = ?target, outcome = ?outcome,
                     committed_digest = ?match outcome { ObservedOutcome::Commit(reference) => Some(reference.digest), _ => None },
-                    "Observed final local consensus result after direct and indirect rules");
+                    "Local leader decision before contiguous-prefix output");
                 state.outcomes.insert(target, outcome);
                 // Bound the registry even during a large first observation after recovery.
                 while state.outcomes.len() > MAX_OBSERVED_OUTCOMES {
@@ -633,7 +646,7 @@ impl Adversary {
             || !self.is_byzantine(self.authority)
             || normal.author() != self.authority
             || normal.round() == 0
-            || self.remaining_at(self.started.elapsed()).is_none()
+            || self.attack_elapsed(self.started.elapsed()).and_then(|t| self.remaining_at(t)).is_none()
         {
             return (normal, vec![]);
         }
@@ -1126,6 +1139,12 @@ impl Adversary {
         if messages > self.config.max_pending_messages
             || total_bytes > self.config.max_pending_bytes
         {
+            tracing::info!(event="adversary_budget_limit", authority=self.authority,
+                pending_messages=state.pending_messages, pending_bytes=state.pending_bytes,
+                requested_bytes=bytes, message_limit=self.config.max_pending_messages,
+                byte_limit=self.config.max_pending_bytes,
+                messages_exceeded=messages > self.config.max_pending_messages,
+                bytes_exceeded=total_bytes > self.config.max_pending_bytes);
             return None;
         }
         state.pending_messages = messages;
@@ -1216,6 +1235,8 @@ impl ScheduledSender {
     ) -> Option<()> {
         let adversary = &connection.adversary;
         let elapsed = adversary.started.elapsed();
+        // Sample both clocks before target lookup, which can traverse a large DAG.
+        let attack_elapsed = adversary.attack_elapsed(elapsed);
         let target = if matches!(
             adversary.config.mode,
             AdversaryMode::A3 | AdversaryMode::A4 | AdversaryMode::A5
@@ -1224,7 +1245,8 @@ impl ScheduledSender {
         } else {
             None
         };
-        let delay = adversary.delay_for(connection.peer, &block, variants, target, elapsed);
+        let delay = attack_elapsed.map_or(Duration::ZERO, |attack_elapsed|
+            adversary.delay_for(connection.peer, &block, variants, target, attack_elapsed));
         #[derive(Clone, Copy)]
         enum Action {
             Queued,

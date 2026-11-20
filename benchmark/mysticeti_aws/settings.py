@@ -92,7 +92,7 @@ def validate_adversary(value, parameters):
         raise ValueError('Byzantine identities plus crashed faults exceed floor((nodes-1)/3)')
     result['byzantine_authorities'] = sorted(ids)
     if result['start_after_ms'] is None:
-        result['start_after_ms'] = parameters['warmup'] * 1000
+        result['start_after_ms'] = 0
     for key in ('seed', 'start_after_ms', 'duration_ms', 'delay_ms', 'late_delay_ms',
                 'max_pending_messages', 'max_pending_bytes', 'max_extra_bytes_per_round'):
         lower = 0 if key in ('seed', 'start_after_ms') else 1
@@ -118,9 +118,9 @@ def validate_adversary(value, parameters):
         if not parameters['enable_synchronizer']:
             raise ValueError('Active adversary experiments require enable_synchronizer=true')
         recovery = max(result['late_delay_ms'], result['delay_ms'])
-        experiment_ms = (parameters['warmup'] + parameters['duration']) * 1000
+        experiment_ms = parameters['duration'] * 1000
         if result['start_after_ms'] + result['duration_ms'] + recovery > experiment_ms:
-            raise ValueError('Attack duration must leave recovery >= late_delay_ms inside warmup + duration')
+            raise ValueError('Attack duration must leave recovery >= late_delay_ms inside measurement duration')
     return result
 
 

@@ -18,18 +18,20 @@ pub struct TransactionGenerator {
     transactions_per_second: usize,
     transaction_size: usize,
     initial_delay: Duration,
+    session: std::sync::Arc<crate::benchmark_session::Session>,
 }
 
 impl TransactionGenerator {
     pub const DEFAULT_TRANSACTION_SIZE: usize = 512;
     const TARGET_BLOCK_INTERVAL: Duration = Duration::from_millis(100);
 
-    pub fn start(
+    pub(crate) fn start(
         sender: mpsc::Sender<Vec<Transaction>>,
         seed: AuthorityIndex,
         transactions_per_second: usize,
         transaction_size: usize,
         initial_delay: Duration,
+        session: std::sync::Arc<crate::benchmark_session::Session>,
     ) {
         assert!(transaction_size > 8 + 8); // 8 bytes timestamp + 8 bytes random
         runtime::Handle::current().spawn(
@@ -39,6 +41,7 @@ impl TransactionGenerator {
                 transactions_per_second,
                 transaction_size,
                 initial_delay,
+                session,
             }
             .run(),
         );
@@ -53,10 +56,15 @@ impl TransactionGenerator {
         let mut random: u64 = self.rng.gen(); // 8 bytes
         let zeros = vec![0u8; self.transaction_size - 8 - 8]; // 8 bytes timestamp + 8 bytes random
 
+        if self.session.enabled() {
+            self.session.wait_input().await;
+        } else {
+            runtime::sleep(self.initial_delay).await;
+        }
         let mut interval = runtime::TimeInterval::new(Self::TARGET_BLOCK_INTERVAL);
-        runtime::sleep(self.initial_delay).await;
         loop {
             interval.tick().await;
+            if self.session.ended() { return; }
             let timestamp = (timestamp_utc().as_millis() as u64).to_le_bytes();
 
             let mut block = Vec::with_capacity(target_block_size);
@@ -74,7 +82,7 @@ impl TransactionGenerator {
                 counter += 1;
 
                 if block_size >= max_block_size {
-                    if self.sender.send(block.clone()).await.is_err() {
+                    if !self.send(block.clone()).await {
                         return;
                     }
                     block.clear();
@@ -82,7 +90,7 @@ impl TransactionGenerator {
                 }
             }
 
-            if !block.is_empty() && self.sender.send(block).await.is_err() {
+            if !block.is_empty() && !self.send(block).await {
                 return;
             }
         }
@@ -93,5 +101,14 @@ impl TransactionGenerator {
             .try_into()
             .expect("Transactions should be at least 8 bytes");
         Duration::from_millis(u64::from_le_bytes(bytes))
+    }
+
+    async fn send(&self, block: Vec<Transaction>) -> bool {
+        if !self.session.enabled() { return self.sender.send(block).await.is_ok(); }
+        tokio::select! {
+            biased;
+            _ = self.session.wait_end() => false,
+            result = self.sender.send(block) => result.is_ok(),
+        }
     }
 }

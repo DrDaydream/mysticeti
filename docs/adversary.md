@@ -39,7 +39,7 @@ adversary:
   target_round: null
 ```
 
-The Rust default is A0. Fabric resolves a missing attack start to the configured warmup and saves the effective configuration, exact source revision and binary checksum with the run. Keep a recovery interval after the attack. Timing is monotonic relative to each process's initialization; process startup skew must be considered when comparing replica traces. This is not a globally synchronized external controller.
+The Rust default is A0. Fabric resolves a missing attack start to zero milliseconds after the common measurement start and saves the effective configuration, exact source revision and binary checksum with the run. The attack and recovery interval must fit inside the measured duration. AWS timing schema 2 arms a common UTC plan after runtime readiness; each node maps the plan to its local monotonic clock. Input begins `warmup` seconds before measurement. A node without an armed benchmark session retains process-local timing. Historical schema 1 runs used each process's initialization as the attack origin and must be identified separately.
 
 The queue enforces message and serialized-block byte limits across a node's connections. Overflow releases traffic early and records the event, reducing attack strength instead of creating unbounded memory use or artificial permanent isolation. Timed releases do not require another proposal to arrive. Connection loss can abandon queued deliveries; normal reconnection/fetch applies. A0–A4 do not control honest forwarding, so honest dissemination can reveal an alternate version early. A5 controls outgoing honest block paths too. Finite scheduler delay is separate from ordinary network backpressure.
 

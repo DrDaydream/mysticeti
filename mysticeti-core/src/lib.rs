@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 pub mod adversary;
+mod benchmark_session;
 pub mod block_handler;
 mod block_manager;
 mod block_store;

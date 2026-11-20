@@ -20,6 +20,20 @@ use std::time::Duration;
 use tabled::{Table, Tabled};
 use tokio::time::Instant;
 
+#[cfg(test)]
+mod shared_startup_tests {
+    #[test]
+    fn shared_metrics_exist_before_first_commit_without_fake_sample() {
+        let registry = prometheus::Registry::new();
+        let (metrics, _) = super::Metrics::new(&registry, None);
+        let family = registry.gather().into_iter().find(|x| x.get_name() == "latency_s")
+            .expect("shared histogram must be exported before any commit");
+        assert_eq!(family.get_metric()[0].get_histogram().get_sample_count(), 0);
+        metrics.latency_s.with_label_values(&["shared"]).observe(2.0);
+        assert_eq!(metrics.latency_s.with_label_values(&["shared"]).get_sample_count(), 1);
+    }
+}
+
 const LATENCY_SEC_BUCKETS: &[f64] = &[
     0.1, 0.25, 0.5, 0.75, 1., 1.25, 1.5, 1.75, 2., 2.5, 5., 10., 20., 30., 60., 90.,
 ];
@@ -31,6 +45,8 @@ pub const LATENCY_SQUARED_S: &str = "latency_squared_s";
 
 #[derive(Clone)]
 pub struct Metrics {
+    pub(crate) benchmark: Arc<crate::benchmark_session::Session>,
+    pub benchmark_ready: IntGauge,
     pub benchmark_duration: IntCounter,
     pub latency_s: HistogramVec,
     pub latency_squared_s: CounterVec,
@@ -176,6 +192,9 @@ impl Metrics {
             .unwrap(),
         };
         let metrics = Self {
+            benchmark: crate::benchmark_session::Session::from_env(),
+            benchmark_ready: register_int_gauge_with_registry!(
+                "benchmark_ready", "Validator runtime initialized", registry).unwrap(),
             benchmark_duration: register_int_counter_with_registry!(
                 BENCHMARK_DURATION,
                 "Duration of the benchmark",
@@ -336,6 +355,8 @@ impl Metrics {
             connection_latency_sender,
         };
 
+        metrics.latency_s.with_label_values(&["shared"]);
+        metrics.latency_squared_s.with_label_values(&["shared"]);
         (Arc::new(metrics), reporter)
     }
 }

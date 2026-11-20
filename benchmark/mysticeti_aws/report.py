@@ -5,6 +5,7 @@ from pathlib import Path
 from statistics import fmean
 
 from .metrics import summarize
+from .timing import summarize_windows
 
 
 def number(value, unit=''):
@@ -26,6 +27,9 @@ def format_summary(record, summary, directory):
     lines.extend(['', '+ ADVERSARY'])
     for key, value in attack.items():
         lines.append(f'  {key}: {value}')
+    if record.get('timing_schema') == 2:
+        lines.append('  Attack offsets are relative to the common measurement start.')
+        lines.append(f"  Common timeline: {record.get('timeline', 'not armed')}")
     lines.extend(['', '+ RESULTS (all measured active replicas)'])
     if summary:
         positive = [r for r in rows if r['committed_transactions'] > 0]
@@ -67,11 +71,13 @@ def format_summary(record, summary, directory):
         if record.get(key):
             lines.append(f"  {key}: {record[key]}")
     lines.extend([
+        f"  Timing schema: {record.get('timing_schema', 1)}",
+        f"  Launch dispatch duration: {number(record.get('launch_dispatch_seconds'), ' s')}",
         f"  Launch spread: {number(record.get('launch_spread_seconds'), ' s')}",
         '  Zero commits contribute 0 TPS, but do not contribute to mean latency.',
         '  Latency is the unweighted mean of positive-commit replica means.',
         '  Replica TPS values are averaged, never summed across replicas.',
-        '  This uses shared histogram samples; input-queue latency and network byte/s are not measured here.',
+        '  E2E uses transaction timestamps and committed shared transactions; uncommitted transactions have no latency sample.',
         '  complete describes the test run; inspect zero-commit replicas for lack of progress.',
         '=' * 80,
     ])
@@ -84,7 +90,11 @@ def report_run(directory):
     summary = None
     try:
         samples = directory / 'samples.jsonl'
-        if samples.is_file():
+        if record.get('timing_schema') == 2:
+            windows = json.loads((directory / 'windows.json').read_text(encoding='utf-8'))
+            expected = [str(h['authority']) for h in record['hosts'] if h.get('started')]
+            summary = summarize_windows(record['timeline'], windows, expected)
+        elif samples.is_file():
             windows = {}
             for line in samples.read_text(encoding='utf-8').splitlines():
                 sample = json.loads(line)
@@ -98,7 +108,7 @@ def report_run(directory):
                                 {i: after[i]['monotonic'] - s['monotonic'] for i, s in before.items()})
         elif (directory / 'summary.json').is_file():
             summary = json.loads((directory / 'summary.json').read_text(encoding='utf-8'))
-    except (ValueError, KeyError, TypeError) as error:
+    except (OSError, ValueError, KeyError, TypeError) as error:
         record['report_error'] = str(error)
     text = format_summary(record, summary, directory)
     print(text, flush=True)

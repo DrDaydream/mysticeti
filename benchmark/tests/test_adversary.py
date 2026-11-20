@@ -12,11 +12,11 @@ def params(**changes):
     return value
 
 
-def test_active_mode_selects_fixed_byzantine_ids_and_warmup_start():
+def test_active_mode_selects_fixed_byzantine_ids_and_measurement_start():
     actual = validate_benchmark(params(adversary={'mode': 'A3'}))
     assert actual['adversary'] == {
         'mode': 'A3', 'byzantine_authorities': [0, 1, 2], 'seed': 1,
-        'start_after_ms': 20000, 'duration_ms': 60000, 'delay_ms': 200,
+        'start_after_ms': 0, 'duration_ms': 60000, 'delay_ms': 200,
         'late_delay_ms': 1000, 'max_pending_messages': 4096,
         'max_pending_bytes': 67108864, 'max_extra_bytes_per_round': 8388608,
         'target_authority': None, 'target_round': None,

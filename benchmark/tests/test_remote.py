@@ -76,7 +76,11 @@ def test_end_to_end_runner_uses_prebuilt_binary_and_reports_replica_mean(monkeyp
     build={**provenance,'adversary_schema':1,'rustflags':RUSTFLAGS,'rust_toolchain':RUST_TOOLCHAIN,
            'sha256':hashlib.sha256(binary.read_bytes()).hexdigest()}
     (binary.parents[2]/'.mysticeti-build.json').write_text(json.dumps(build))
-    commands=[]; commands_lock=threading.Lock(); counters={}
+    commands=[]; commands_lock=threading.Lock(); counters={}; plans={}
+    clock=[10000.0]
+    monkeypatch.setattr('mysticeti_aws.remote.time', SimpleNamespace(
+        time=lambda: clock[0], monotonic=lambda: clock[0],
+        sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds)))
     hosts=[SimpleNamespace(ip=f'1.2.3.{i}',region='us-east-1',instance_id=f'i-{i}') for i in range(4)]
     cloud=SimpleNamespace(hosts=lambda:hosts,sync_network=lambda:None)
     class SSH:
@@ -84,7 +88,9 @@ def test_end_to_end_runner_uses_prebuilt_binary_and_reports_replica_mean(monkeyp
         def __enter__(self): return self
         def __exit__(self,*args): pass
         def open(self): pass
-        def put(self,*args,**kwargs): pass
+        def put(self, source, remote):
+            if remote.endswith('/start.yaml.tmp'):
+                plans[self.host.ip] = yaml.safe_load(source.getvalue().decode())
         def get(self,remote,local): Path(local).write_text('node log')
         def run(self,command,**kwargs):
             with commands_lock:
@@ -92,9 +98,18 @@ def test_end_to_end_runner_uses_prebuilt_binary_and_reports_replica_mean(monkeyp
                 if '/metrics' in command:
                     index=0 if int(self.host.ip.rsplit('.', 1)[1]) in stalled else counters.get(self.host.ip,0)+1
                     counters[self.host.ip]=index
-                    return SimpleNamespace(stdout=f'latency_s_count{{workload="shared"}} {index*100}\nlatency_s_sum{{workload="shared"}} {index*20}\n')
+                    return SimpleNamespace(stdout=f'benchmark_ready 1\nlatency_s_count{{workload="shared"}} {index*100}\nlatency_s_sum{{workload="shared"}} {index*20}\n')
+                if 'armed.yaml' in command or 'window.yaml' in command:
+                    authority = int(self.host.ip.rsplit('.', 1)[1])
+                    record = dict(plans[self.host.ip], authority=authority)
+                    if 'window.yaml' in command:
+                        count = 0 if authority in stalled else 100
+                        record.update(complete=True, count=count, sum_s=count * 0.2, input_lateness_ms=0)
+                    return SimpleNamespace(stdout=yaml.safe_dump(record))
             return SimpleNamespace(stdout=json.dumps(build))
     def genesis(args,**kwargs):
+        if args[0] == 'chronyc':
+            return SimpleNamespace(returncode=0)
         assert args[0]==str(binary)
         assert args[1]=='benchmark-genesis'
         output=Path(args[args.index('--working-directory')+1]); (output/'private').mkdir(parents=True)
@@ -125,4 +140,11 @@ def test_end_to_end_runner_uses_prebuilt_binary_and_reports_replica_mean(monkeyp
     assert len(summary['nodes'])==4
     assert summary['replica_tps_mean']==pytest.approx(sum(n['tps'] for n in summary['nodes'])/4)
     assert len(list((tmp_path/'results').glob('*/logs/node-*.log')))==4
+    from mysticeti_aws.report import report_run
+    directory = next((tmp_path/'results').glob('run-*'))
+    report_run(directory)
+    assert 'N/A (no valid complete measurement window)' not in (directory/'summary.txt').read_text(encoding='utf-8')
+    (directory/'windows.json').unlink()
+    report_run(directory)
+    assert 'N/A (no valid complete measurement window)' in (directory/'summary.txt').read_text(encoding='utf-8')
     assert all(not any(word in command.split() for word in ('cargo','git','apt-get','rustup')) for command in commands)
