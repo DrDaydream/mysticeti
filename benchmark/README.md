@@ -96,15 +96,19 @@ A1 有限时间扣留 Byzantine 提议；A2 与 DAG 无关地分发两个版本�
 
 `target_authority` 必须在固定 Byzantine 集合里。`target_round` 如提供必须为正，并确实选出该身份（或未指定身份时的某个固定 Byzantine 身份）。开启 pipeline 后第 r 轮的 leaders 为 `(r + offset) % n`，其中 `offset=0..leaders-1`。只给身份时由策略选择符合条件的轮次；两者均为空时使用策略找到的最早合适目标。
 
-此实现使用已有 `round_robin` leader schedule 和三轮 wave；默认两个 leaders。schedule 写入 run metadata，不增加 Rust 协议字段。适配器开启 pipeline，并记录设置。活动模式必须设置 `enable_synchronizer=true`；启动脚本通过 `unset USE_SYNCER` 启用缺失区块抓取。这份原型的 Rust 代码检测变量是否存在，并在存在时跳过抓取，因此 `USE_SYNCER=0` 也会禁用抓取。A0 显式禁用同步器时才设置 `USE_SYNCER=1`。
+此实现使用已有 `round_robin` leader schedule、三轮 wave 和两个 leaders。当前上游对齐分支恢复上游 orchestrator 的启动映射：`enable_synchronizer=true` 导出 `USE_SYNCER=1`。Rust 检查变量是否存在，并在存在时跳过主动缺块抓取（`USE_SYNCER=0` 也会跳过）；这个历史名称不表示实际开启抓取。`run.json` 新增 `missing_parent_fetch_enabled` 记录实际行为。A0 显式配置 false 才会 unset 变量并启用主动抓取；活动模式仍要求 true。
 
-此前适配器将该开关映射反了：历史结果中的 `enable_synchronizer=true` 不能证明补块实际启用。修复只改变 Python 生成的节点启动环境；在原控制目录直接执行 `fab remote` 即可复用现有二进制，无需重新编译。修复后需重新运行实验，旧采样不会因此变化；是否恢复 A2–A5 的提交，需要实际运行验证。
+此分支改变了之前适配器的启动映射，所有模式均按上游正常同步路径运行；A3/A5 的敌手代码和时间参数保持原样。新工具包会执行 install 固定完整源码身份，结果放在新目录。完整边界与统计说明见 [upstream-protocol.md](../docs/upstream-protocol.md)。
 
 攻击时间相对各节点 Core 初始化的本地单调时钟。Fabric 并行启动存在偏差，`run.json` 记录控制机观察的 `launch_spread_seconds`。测量 warmup 在所有运行节点就绪后开始，因此与节点攻击时间轴存在启动和就绪偏差；分析时对齐各节点日志，不能把相同毫秒设置当作全局同时启动。
 
 ## 结果与离线检查
 
-测量结束立即在终端打印 Bullshark 风格的 `SUMMARY`，随后停止节点并下载日志；最终状态写入 `summary.txt` 和 `run.json`。零提交节点的 TPS 为 0、延迟为 `N/A`（JSON 中为 null），平均延迟仅使用有提交的副本均值；全部零提交时平均延迟为 `N/A`。零提交仍计入平均 TPS，缺失指标或计数器重置仍报告错误。输出分别标明所有运行副本和诚实副本的统计，列出每个副本的提交数、TPS、延迟和采样时长。`complete` 仅表示实验流程完成，不代表所有节点都有进展。
+测量结束立即打印 `SUMMARY`，随后停止节点并下载日志。新运行的原生 A0（包括工具包 A1 映射的 A0 + faults）使用最后累计 shared sum/count，包含启动阶段提交；各运行副本均值等权平均。零观测副本按上游算术贡献 0，同时明确标记没有 E2E 观测。上游 TPS 为 `max(count) // max(benchmark_duration)`；副本平均 TPS 另列为诊断。`benchmark_duration` 在提交时更新，并不是末次 scrape 的运行时长。
+
+A3/A5 继续使用 before/after 差分：零提交副本不参与延迟均值，全部零输出为 N/A。所有模式允许真实零输出，缺指标、重置和不完整采样仍是错误。旧档案缺少 `measurement_basis` 时保持旧窗口口径。`complete` 表示流程完成，不代表所有节点取得进展。
+
+工具包的 **A1 标签** 指原生 `--adversary A0 --faults floor((nodes-1)/3)`；直接调用 `fab remote --adversary A1` 仍是历史运行时扣留敌手，不能当作新的 crash A1。
 
 在 `benchmark` 目录补打印最新一次结果：
 

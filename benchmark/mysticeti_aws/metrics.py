@@ -7,6 +7,9 @@ from statistics import fmean
 
 _METRICS = {"latency_s_count": "count", "latency_s_sum": "sum"}
 _LEADERS = "committed_leaders_total"
+_DURATION = 'benchmark_duration'
+WINDOW_BASIS = 'window-delta-v1'
+UPSTREAM_BASIS = 'upstream-terminal-cumulative-v1'
 _METRIC_NAME = re.compile(r"[a-zA-Z_:][a-zA-Z0-9_:]*")
 _SAMPLE = re.compile(
     r"([a-zA-Z_:][a-zA-Z0-9_:]*)(?:\{(.*)\})?[ \t]+"
@@ -69,7 +72,7 @@ def parse_snapshot(text: str) -> dict:
         if name_match is None:
             continue
         name = name_match.group()
-        if name not in _METRICS and name != _LEADERS:
+        if name not in _METRICS and name not in (_LEADERS, _DURATION):
             continue
         sample = _SAMPLE.fullmatch(line)
         if sample is None:
@@ -85,7 +88,11 @@ def parse_snapshot(text: str) -> dict:
         if _NUMBER.fullmatch(raw_value) is None:
             raise ValueError(f"Malformed {name} value on line {line_number}")
         value = _nonnegative(raw_value, f"{name} on line {line_number}")
-        if name == _LEADERS:
+        if name == _DURATION:
+            if labels or name in result or not value.is_integer():
+                raise ValueError('Invalid or duplicate benchmark_duration counter')
+            result[name] = value
+        elif name == _LEADERS:
             series = tuple(sorted(labels.items()))
             if series in leader_series:
                 raise ValueError("Duplicate committed_leaders_total series")
@@ -162,3 +169,56 @@ def summarize(
         "zero_commit_authorities": [node['authority'] for node in nodes if node['committed_transactions'] == 0],
         "all_nodes_progress": len(latencies) == len(nodes),
     }
+
+
+def summarize_run(before, after, elapsed, basis=WINDOW_BASIS):
+    """Reproduce the selected, recorded statistics basis.
+
+    The upstream terminal averages each replica's last cumulative sum/count,
+    including startup. A recorded zero-count replica contributes zero. Its TPS
+    is max(last count) // max(last benchmark_duration), not a replica TPS mean.
+    Keep the before/after validation even for cumulative reports so resets or
+    incomplete runs cannot be silently accepted. Old archives use window deltas.
+    """
+    if basis not in (WINDOW_BASIS, UPSTREAM_BASIS):
+        raise ValueError(f'Unknown measurement basis: {basis}')
+    result = summarize(before, after, elapsed)
+    if basis == UPSTREAM_BASIS:
+        durations = {}
+        zero = {}
+        for authority, end in after.items():
+            for snapshot in (before[authority], end):
+                for key in ('count', _DURATION):
+                    if key not in snapshot:
+                        raise ValueError(f'Node {authority} is missing {key}')
+                    value = _nonnegative(snapshot[key], f'Node {authority} {key}')
+                    if not value.is_integer():
+                        raise ValueError(f'Node {authority} {key} must be an integer')
+                if snapshot['count'] == 0 and snapshot['sum'] != 0:
+                    raise ValueError(f'Node {authority} has latency sum without commits')
+            if end[_DURATION] < before[authority][_DURATION]:
+                raise ValueError(f'Node {authority} counter reset: {_DURATION}')
+            durations[authority] = int(end[_DURATION])
+            zero[authority] = {key: 0 for key in end}
+        # Reuse counter validation with an explicit zero origin.
+        result = summarize(zero, after, {i: max(1, d) for i, d in durations.items()})
+        latency_ns = []
+        for row in result['nodes']:
+            authority = row['authority']
+            count = int(row['committed_transactions'])
+            duration = durations[authority]
+            mean_ns = round(after[authority]['sum'] * 1_000_000_000) // count if count else 0
+            latency_ns.append(mean_ns)
+            row.update(mean_latency_ms=mean_ns / 1_000_000,
+                       duration_s=duration, tps=count / duration if duration else 0,
+                       has_latency_observations=bool(count))
+        duration = max(durations.values())
+        result.update(
+            mean_latency_ms=(sum(latency_ns) // len(latency_ns)) / 1_000_000,
+            replica_tps_mean=fmean(row['tps'] for row in result['nodes']),
+            upstream_tps=max(int(end['count']) for end in after.values()) // duration if duration else 0,
+            latency_contributors=len(after),
+            positive_observation_replicas=sum(end['count'] > 0 for end in after.values()),
+        )
+    result['measurement_basis'] = basis
+    return result

@@ -19,7 +19,7 @@ import yaml
 
 from .build import verification_script, verify_build
 from .cloud import Cloud
-from .metrics import parse_snapshot, summarize
+from .metrics import parse_snapshot, summarize_run, UPSTREAM_BASIS, WINDOW_BASIS
 from .report import format_summary
 from .settings import ADVERSARY_DEFAULTS, load_allocation, validate_benchmark
 from .source import resolve_source
@@ -230,9 +230,9 @@ class Runner:
                              '--committee-path', f'{remote_directory}/committee.yaml',
                              '--parameters-path', f'{remote_directory}/parameters.yaml',
                              '--private-config-path', f'{remote_directory}/private/{index}.yaml']
-                # This prototype's BlockFetcherWorker returns early when USE_SYNCER
-                # exists (even "0"). Remove it to enable missing-block fetching.
-                syncer_env = 'unset USE_SYNCER' if parameters['enable_synchronizer'] else 'export USE_SYNCER=1'
+                # Preserve upstream orchestrator semantics, including its inverted
+                # flag: USE_SYNCER=1 skips the active missing-parent fetch strategy.
+                syncer_env = 'export USE_SYNCER=1' if parameters['enable_synchronizer'] else 'unset USE_SYNCER'
                 script = '\n'.join([
                     '#!/usr/bin/env bash', 'set -euo pipefail',
                     f'export TPS={allocation["per_node_tps"]}', f'export TRANSACTION_SIZE={parameters["tx_size"]}',
@@ -303,6 +303,9 @@ class Runner:
         active = list(enumerate(hosts[:len(hosts) - parameters['faults']]))
         allocation = load_allocation(parameters['rate'], len(hosts), parameters['faults'])
         record = {'run_id': run_id, 'commit': self.provenance.get('commit'), 'source': self.provenance, 'status': 'starting', 'parameters': parameters,
+                  'measurement_basis': UPSTREAM_BASIS if parameters['adversary']['mode'] == 'A0' else WINDOW_BASIS,
+                  'protocol_base': '68d9038f4055e67ced4ae96c1de46b9b0239413b',
+                  'missing_parent_fetch_enabled': not parameters['enable_synchronizer'],
                   'load': allocation, 'builds': getattr(self, 'installed', []),
                   'controller_build': getattr(self, 'controller_build', None),
                   'adversary': parameters['adversary'],
@@ -343,8 +346,9 @@ class Runner:
                 if finished:
                     break
             elapsed = {index: after[index]['monotonic'] - before[index]['monotonic'] for index in before}
-            summary = summarize({i: s['metrics'] for i, s in before.items()},
-                                {i: s['metrics'] for i, s in after.items()}, elapsed)
+            summary = summarize_run({i: s['metrics'] for i, s in before.items()},
+                                    {i: s['metrics'] for i, s in after.items()}, elapsed,
+                                    record['measurement_basis'])
             summary.update(load=allocation, commit=self.provenance.get('commit'), run_id=run_id,
                            adversary=parameters['adversary'], crashed_authorities=record['crashed_authorities'],
                            enable_synchronizer=parameters['enable_synchronizer'])

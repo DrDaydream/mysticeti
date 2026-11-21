@@ -56,7 +56,7 @@ def test_all_replicas_receive_same_attack_configuration_and_synchronizer(monkeyp
     assert actual['adversary'] == parameters['adversary']
     assert actual['wave_length'] in (3, 4, 5)
     if 'mysticeti_aws' == 'mysticeti_aws':
-        assert all('unset USE_SYNCER' in uploads[(h.ip, '/runs/test/start.sh')] for h in hosts)
+        assert all('export USE_SYNCER=1' in uploads[(h.ip, '/runs/test/start.sh')] for h in hosts)
     else:
         assert actual['enable_synchronizer'] is True
 
@@ -67,7 +67,8 @@ def test_node_launch_sets_effective_legacy_fetcher_environment(monkeypatch, tmp_
     """Execute the uploaded script: parent/tmux variables must not invert the setting.
 
     The prototype's BlockFetcherWorker returns early when USE_SYNCER exists,
-    irrespective of its value. Enabling fetch must remove it at the node process.
+    irrespective of its value. Restore the upstream launcher's export, including
+    this inverted flag, while explicitly overriding inherited environment.
     """
     from mysticeti_aws import remote
     bash = Path('C:/Program Files/Git/bin/bash.exe') if os.name == 'nt' else Path('/bin/bash')
@@ -107,7 +108,7 @@ def test_node_launch_sets_effective_legacy_fetcher_environment(monkeypatch, tmp_
         start.write_text(script, newline='\n')
         result = run([str(bash), start.as_posix()], env=env, text=True, capture_output=True)
         assert result.returncode == 0, result.stderr
-        assert (node / 'node.log').read_text().strip() == ('unset' if enabled else '1')
+        assert (node / 'node.log').read_text().strip() == ('1' if enabled else 'unset')
 
 
 def test_fabric_remote_parser_accepts_attack_selector_and_count(monkeypatch, tmp_path):

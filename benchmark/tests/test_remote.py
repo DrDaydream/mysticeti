@@ -60,13 +60,14 @@ def test_collection_failure_stops_nodes_and_keeps_failure_record(monkeypatch,tmp
     assert (records[0].parent / 'summary.txt').is_file()
 
 
+@pytest.mark.parametrize('mode,faults', [('A0', 0), ('A0', 1), ('A3', 0), ('A5', 0)])
 @pytest.mark.parametrize('stalled', [(), (0,), (0, 1, 2, 3)])
-def test_end_to_end_runner_uses_prebuilt_binary_and_reports_replica_mean(monkeypatch,tmp_path,capsys,stalled):
+def test_end_to_end_runner_uses_prebuilt_binary_and_reports_replica_mean(monkeypatch,tmp_path,capsys,stalled,mode,faults):
     import hashlib
     import threading
     import yaml
     from mysticeti_aws.remote import Runner
-    from mysticeti_aws.settings import DEFAULTS,REPOSITORY,RUSTFLAGS,RUST_TOOLCHAIN
+    from mysticeti_aws.settings import DEFAULTS,REPOSITORY,RUSTFLAGS,RUST_TOOLCHAIN,ADVERSARY_DEFAULTS
     provenance={'commit':'a'*40,'repository':REPOSITORY,'source_ref':'HEAD'}
     settings=copy.deepcopy(DEFAULTS)
     settings['remote']['source_dir']=str(tmp_path/'source')
@@ -90,16 +91,17 @@ def test_end_to_end_runner_uses_prebuilt_binary_and_reports_replica_mean(monkeyp
             with commands_lock:
                 commands.append(command)
                 if '/metrics' in command:
-                    index=0 if int(self.host.ip.rsplit('.', 1)[1]) in stalled else counters.get(self.host.ip,0)+1
-                    counters[self.host.ip]=index
-                    return SimpleNamespace(stdout=f'latency_s_count{{workload="shared"}} {index*100}\nlatency_s_sum{{workload="shared"}} {index*20}\n')
+                    sample=counters.get(self.host.ip,0)+1
+                    counters[self.host.ip]=sample
+                    index=0 if int(self.host.ip.rsplit('.', 1)[1]) in stalled else sample
+                    return SimpleNamespace(stdout=f'latency_s_count{{workload="shared"}} {index*100}\nlatency_s_sum{{workload="shared"}} {index*20}\nbenchmark_duration {sample}\n')
             return SimpleNamespace(stdout=json.dumps(build))
     def genesis(args,**kwargs):
         assert args[0]==str(binary)
         assert args[1]=='benchmark-genesis'
         output=Path(args[args.index('--working-directory')+1]); (output/'private').mkdir(parents=True)
         (output/'committee.yaml').write_text('fixture: true')
-        (output/'parameters.yaml').write_text('leader_timeout: {secs: 2, nanos: 0}\n')
+        (output/'parameters.yaml').write_text(yaml.safe_dump({'leader_timeout': {'secs': 2, 'nanos': 0}, 'adversary': ADVERSARY_DEFAULTS}))
         for i in range(4):
             (output/f'private/{i}.yaml').write_text(yaml.safe_dump({'authority_index':i,'keypair':0,'storage_path':'/old'}))
     monkeypatch.setattr('mysticeti_aws.remote.subprocess.run',genesis)
@@ -113,16 +115,28 @@ def test_end_to_end_runner_uses_prebuilt_binary_and_reports_replica_mean(monkeyp
         assert 'cleanup/log download pending' in output
         return download(*args)
     monkeypatch.setattr(runner, '_download_logs', download_after_print)
-    runner.remote(dict(settings['benchmark'],nodes=4,duration=1,warmup=0,scrape_interval=1))
+    runner.remote(dict(settings['benchmark'],nodes=4,duration=1,warmup=0,scrape_interval=1, faults=faults, adversary={'mode': mode, 'byzantine_authorities': [] if mode == 'A0' else [0], 'start_after_ms': 0, 'duration_ms': 100, 'delay_ms': 100, 'late_delay_ms': 100}))
     summary=json.loads(next((tmp_path/'results').glob('*/summary.json')).read_text())
-    if len(stalled) == 4:
-        assert summary['mean_latency_ms'] is None
+    active = 4 - faults
+    positive = sum(i not in stalled for i in range(active))
+    if mode == 'A0':
+        assert summary['mean_latency_ms'] == pytest.approx(200 * positive / active, abs=0.000001)
+        assert summary['latency_contributors'] == active
+        assert summary['positive_observation_replicas'] == positive
+        assert summary['upstream_tps'] == (100 if positive else 0)
+        assert summary['measurement_basis'] == 'upstream-terminal-cumulative-v1'
     else:
-        assert summary['mean_latency_ms']==pytest.approx(200)
-    assert summary['latency_contributors'] == 4 - len(stalled)
-    assert summary['all_nodes_progress'] == (not stalled)
+        assert summary['mean_latency_ms'] == (pytest.approx(200) if positive else None)
+        assert summary['latency_contributors'] == positive
+        assert summary['measurement_basis'] == 'window-delta-v1'
+    assert summary['all_nodes_progress'] == (positive == active)
+    record=json.loads(next((tmp_path/'results').glob('*/run.json')).read_text())
+    assert record['crashed_authorities'] == list(range(active, 4))
+    assert [h['authority'] for h in record['hosts'] if h['started']] == list(range(active))
+    assert record['missing_parent_fetch_enabled'] is False
+    assert len([c for c in commands if 'new-session' in c]) == active
     assert next((tmp_path/'results').glob('*/summary.txt')).is_file()
-    assert len(summary['nodes'])==4
-    assert summary['replica_tps_mean']==pytest.approx(sum(n['tps'] for n in summary['nodes'])/4)
-    assert len(list((tmp_path/'results').glob('*/logs/node-*.log')))==4
+    assert len(summary['nodes'])==active
+    assert summary['replica_tps_mean']==pytest.approx(sum(n['tps'] for n in summary['nodes'])/active)
+    assert len(list((tmp_path/'results').glob('*/logs/node-*.log')))==active
     assert all(not any(word in command.split() for word in ('cargo','git','apt-get','rustup')) for command in commands)
